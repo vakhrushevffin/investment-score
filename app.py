@@ -60,8 +60,7 @@ with page[0]:
     if show=='Неполный Score':shown=shown[shown.score.isna()]
     if query:shown=shown[shown.ticker.str.contains(query.upper(),regex=False)]
     table=shown[['rank','ticker','ranking_score','score','partial_score','completeness','quality','growth','valuation','momentum','price','quote_date','status','flags']].copy()
-    table['completeness']=(table.completeness*100).round(0)
-    st.dataframe(table,hide_index=True,use_container_width=True,column_config={'ranking_score':st.column_config.NumberColumn('Рейтинговый балл',format='%.2f'),'score':st.column_config.NumberColumn('Полный Score',format='%.2f'),'partial_score':st.column_config.NumberColumn('Частичный Score',format='%.2f'),'completeness':st.column_config.ProgressColumn('Полнота, %',min_value=0,max_value=100)})
+    st.dataframe(table,hide_index=True,use_container_width=True,column_config={'ranking_score':st.column_config.NumberColumn('Рейтинговый балл',format='%.2f'),'score':st.column_config.NumberColumn('Полный Score',format='%.2f'),'partial_score':st.column_config.NumberColumn('Частичный Score',format='%.2f'),'completeness':st.column_config.ProgressColumn('Полнота, %',min_value=0,max_value=1)})
     fig=px.bar(shown.head(28),x='ticker',y='ranking_score',color='completeness',color_continuous_scale='Teal',title='Рейтинговый балл: полный или частичный')
     fig.update_layout(height=410,xaxis_title='',yaxis_title='Балл / 100')
     st.plotly_chart(fig,use_container_width=True)
