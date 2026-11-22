@@ -1,9 +1,6 @@
 """Batch refresh: offline-friendly; prices and fundamentals independently selectable."""
 import argparse
 import datetime as dt
-import gzip
-import io
-import json
 import os
 from pathlib import Path
 import sys
@@ -18,7 +15,7 @@ def registry(path=ROOT/'data/tickers.csv'):
     r=pd.read_csv(path,dtype={'ticker':'string','cik':'Int64'})
     if not set(REQUIRED).issubset(r.columns):raise ValueError('Missing registry columns')
     r['ticker']=r.ticker.str.strip().str.upper()
-    if r.ticker.isna().any() or r.ticker.duplicated().any():raise ValueError('Invalid/duplicate tickers')
+    if r.ticker.isna().any() or r.ticker.eq('').any() or r.ticker.duplicated().any():raise ValueError('Invalid/duplicate tickers')
     if len(r)>1000:raise ValueError('Maximum registry size: 1000')
     for k in ('enabled','fundamental_enabled','technical_enabled'):
         r[k]=r[k].astype(str).str.lower().isin(['true','1','yes'])
@@ -29,7 +26,7 @@ def update_fundamentals(reg, batch=20, email=None, dry_run=False):
     target=reg[reg.enabled & reg.fundamental_enabled].copy()
     if dry_run:return {'selected':len(target),'batches':(len(target)+batch-1)//batch}
     if not email or '@' not in email:raise ValueError('SEC_CONTACT_EMAIL environment variable required')
-    logs=[];results=[]
+    logs=[];results=[];failed=[]
     for offset in range(0,len(target),batch):
         sub=target.iloc[offset:offset+batch]
         rows=[]
@@ -42,8 +39,13 @@ def update_fundamentals(reg, batch=20, email=None, dry_run=False):
                 row=pd.Series({c:float('nan') for c in old.columns});row['ticker']=item.ticker;row['cik']=int(item.cik)
             rows.append(row)
         if not rows:continue
-        result,log=refresh(pd.DataFrame(rows).reset_index(drop=True),email)
-        results.append(result);logs.append(log)
+        try:
+            result,log=refresh(pd.DataFrame(rows).reset_index(drop=True),email)
+            results.append(result);logs.append(log)
+            failed.extend(result.loc[result.status.eq('SEC_REFRESH_FAILED'),'ticker'].tolist())
+        except Exception as exc:
+            failed.extend([str(row['ticker']) for row in rows])
+            logs.append({'ticker':','.join(str(row['ticker']) for row in rows),'source':'SEC','metric':'batch','result':'ERROR','details':str(exc)[:180]})
         print(f'Fundamentals batch {offset//batch+1}: {len(result)}',flush=True)
     if results:
         combined=pd.concat(results,ignore_index=True)
@@ -53,7 +55,7 @@ def update_fundamentals(reg, batch=20, email=None, dry_run=False):
         temp=ROOT/'data/baseline.csv.tmp';merged.to_csv(temp,index=False);temp.replace(ROOT/'data/baseline.csv')
     if logs:
         pd.concat([x if isinstance(x,pd.DataFrame) else pd.DataFrame([x]) for x in logs],ignore_index=True).to_csv(ROOT/'data/refresh_log.csv',index=False)
-    return {'selected':len(target),'updated':sum(map(len,results))}
+    return {'selected':len(target),'updated':sum(map(len,results)),'failed':len(failed)}
 
 def update_prices(reg,batch=40,years=12,dry_run=False):
     target=reg[reg.enabled & reg.technical_enabled].ticker.tolist()
@@ -78,6 +80,10 @@ def update_prices(reg,batch=40,years=12,dry_run=False):
                     x['ticker']=t
                     x=x[['date','ticker','open','high','low','close','adj_close','volume']].dropna(subset=['close','adj_close'])
                     if len(x)<200:raise ValueError('Fewer than 200 sessions')
+                    x['date']=pd.to_datetime(x['date'],utc=True).dt.tz_localize(None)
+                    if x.date.duplicated().any():raise ValueError('Duplicate dates in response')
+                    if (x[['open','high','low','close','adj_close']]<=0).any().any():raise ValueError('Nonpositive OHLC price')
+                    if (dt.date.today()-x.date.max().date()).days>7:raise ValueError('Stale latest quote')
                     chunks.append(x)
                 except Exception as e:errors.append({'ticker':t,'error':str(e)[:200]})
         except Exception as e:
@@ -87,10 +93,11 @@ def update_prices(reg,batch=40,years=12,dry_run=False):
     if not chunks:raise RuntimeError('No price data received; archive left untouched')
     fresh=pd.concat(chunks,ignore_index=True)
     if not existing.empty:
-        existing=existing[~existing.ticker.isin(fresh.ticker.unique())]
+        # Preserve older dates; only replace overlapping ticker/date observations.
         fresh=pd.concat([existing,fresh],ignore_index=True)
     fresh['date']=pd.to_datetime(fresh.date).dt.tz_localize(None)
     fresh=fresh.drop_duplicates(['ticker','date'],keep='last').sort_values(['ticker','date'])
+    if fresh[['ticker','date','close','adj_close']].isna().any().any():raise ValueError('Archive integrity failure')
     tmp=archive.with_suffix('.tmp')
     fresh.to_csv(tmp,index=False,compression='gzip');tmp.replace(archive)
     pd.DataFrame(errors,columns=['ticker','error']).to_csv(ROOT/'data/price_errors.csv',index=False)
@@ -101,8 +108,12 @@ def main():
     parser.add_argument('--batch-size',type=int,default=20);parser.add_argument('--dry-run',action='store_true')
     args=parser.parse_args();r=registry()
     if args.batch_size<1 or args.batch_size>100:parser.error('batch-size must be 1..100')
+    problems=0
     if args.mode in ('fundamentals','all'):
-        print('Fundamentals:',update_fundamentals(r,args.batch_size,os.getenv('SEC_CONTACT_EMAIL'),args.dry_run))
+        result=update_fundamentals(r,args.batch_size,os.getenv('SEC_CONTACT_EMAIL'),args.dry_run)
+        print('Fundamentals:',result);problems+=result.get('failed',0)
     if args.mode in ('prices','all'):
-        print('Prices:',update_prices(r,args.batch_size,dry_run=args.dry_run))
+        result=update_prices(r,args.batch_size,dry_run=args.dry_run)
+        print('Prices:',result);problems+=result.get('errors',0)
+    if problems:raise SystemExit(f'Partial refresh: {problems} failures; see data error logs')
 if __name__=='__main__':main()
