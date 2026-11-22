@@ -1,0 +1,32 @@
+
+name: Safe Refresh Tests
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout test branch
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Check Python syntax
+        run: python -m compileall -q engine scripts
+
+      - name: Test prices dry-run
+        run: python -m scripts.update_data --mode prices --batch-size 40 --dry-run
+
+      - name: Test fundamentals dry-run
+        run: python -m scripts.update_data --mode fundamentals --batch-size 20 --dry-run
