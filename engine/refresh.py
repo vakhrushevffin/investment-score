@@ -39,6 +39,10 @@ def refresh(df,email,progress=None):
             flags.append('PRICE_REFRESH_FAILED')
             # Do not silently use the previous price in an up-to-date ranking.
             out.at[t,'quote_date']=''
+            out.at[t,'price']=np.nan
+            for field in ('sma50','sma200','rsi14','mom12_1','mom6_1'):
+                out.at[t,field]=np.nan
+            out.at[t,'technical_pass']=False
             logs.append({'ticker':t,'source':'PRICE','metric':'price','result':'ERROR','details':str(e)[:180]})
         try:
             resp=session.get(f'https://data.sec.gov/api/xbrl/companyfacts/CIK{int(old["cik"]):010d}.json',timeout=35)
@@ -88,11 +92,10 @@ def refresh(df,email,progress=None):
             out.at[t,'status']='REVIEW_REQUIRED' if flags else 'AUTOMATED_CHECK_ONLY'
             out.at[t,'flags']=';'.join(sorted(set(flags)))
         except Exception as e:
-            # Failure must not make previous numbers look freshly validated.
-            for m in METRICS:
-                out.at[t,m+'_end']='';out.at[t,m+'_filed']='';out.at[t,m+'_ttm']=np.nan
-            out.at[t,'revenue_yoy']=np.nan
-            out.at[t,'status']='SEC_REFRESH_FAILED';out.at[t,'flags']='SEC_REFRESH_FAILED'
+            # Retain last successful observations and original dates; scorer rejects stale values.
+            # Mark the refresh attempt as failed, never as validated.
+            out.at[t,'status']='SEC_REFRESH_FAILED'
+            out.at[t,'flags']='SEC_REFRESH_FAILED'
             logs.append({'ticker':t,'source':'SEC','metric':'all','result':'ERROR','details':str(e)[:180]})
         time.sleep(.15)
     if progress:progress(1.,'Готово')
