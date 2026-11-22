@@ -10,14 +10,17 @@ from engine.refresh import refresh
 
 st.set_page_config(page_title='Investment Score | Portfolio Decision System',page_icon='📊',layout='wide')
 @st.cache_data
-def initial():return pd.read_csv('data/baseline.csv')
+def initial():
+    from scripts.update_data import registry
+    active=set(registry().query('enabled and fundamental_enabled').ticker)
+    return pd.read_csv('data/baseline.csv').query('ticker in @active').copy()
 if 'snapshot' not in st.session_state:st.session_state.snapshot=enrich(initial())
 if 'logs' not in st.session_state:st.session_state.logs=pd.DataFrame()
 if 'approvals' not in st.session_state:st.session_state.approvals={}
 if 'refresh_at' not in st.session_state:st.session_state.refresh_at='Не выполнялось'
 
 st.title('Investment Score')
-st.caption('28 акций США · Исследовательский рейтинг и поддержка решений · Без исполнения сделок')
+st.caption('Масштабируемый реестр до 1000 акций США · Исследовательский рейтинг и поддержка решений · Без исполнения сделок')
 with st.sidebar:
     st.header('Управление')
     st.caption('Исходный снимок: 20.11.2026 (котировки), 22.11.2026 (модель)')
@@ -61,7 +64,7 @@ with page[0]:
     if query:shown=shown[shown.ticker.str.contains(query.upper(),regex=False)]
     table=shown[['rank','ticker','ranking_score','score','partial_score','completeness','quality','growth','valuation','momentum','price','quote_date','status','validation_flags','ttm_target_end','flags']].copy()
     st.dataframe(table,hide_index=True,use_container_width=True,column_config={'ranking_score':st.column_config.NumberColumn('Рейтинговый балл',format='%.2f'),'score':st.column_config.NumberColumn('Полный Score',format='%.2f'),'partial_score':st.column_config.NumberColumn('Частичный Score',format='%.2f'),'completeness':st.column_config.ProgressColumn('Полнота, %',min_value=0,max_value=1)})
-    fig=px.bar(shown.head(28),x='ticker',y='ranking_score',color='completeness',color_continuous_scale='Teal',title='Рейтинговый балл: полный или частичный')
+    fig=px.bar(shown.head(40),x='ticker',y='ranking_score',color='completeness',color_continuous_scale='Teal',title='Рейтинговый балл: полный или частичный')
     fig.update_layout(height=410,xaxis_title='',yaxis_title='Балл / 100')
     st.plotly_chart(fig,use_container_width=True)
 with page[1]:
