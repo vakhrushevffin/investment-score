@@ -1,0 +1,28 @@
+name: Update daily prices
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '30 23 * * 1-5'
+permissions:
+  contents: write
+concurrency:
+  group: update-market-data
+  cancel-in-progress: false
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - run: pip install -r requirements.txt
+      - run: python -m scripts.update_data --mode prices --batch-size 40
+      - name: Commit data if changed
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add data/daily_prices.csv.gz data/price_errors.csv
+          if ! git diff --cached --quiet; then git commit -m 'Update market data'; git push; fi
