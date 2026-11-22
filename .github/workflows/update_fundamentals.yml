@@ -1,0 +1,25 @@
+name: Update SEC fundamentals
+on:
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    env:
+      SEC_CONTACT_EMAIL: ${{ secrets.SEC_CONTACT_EMAIL }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - run: pip install -r requirements.txt
+      - run: python -m scripts.update_data --mode fundamentals --batch-size 20
+      - name: Commit data if changed
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add data/baseline.csv data/refresh_log.csv
+          if ! git diff --cached --quiet; then git commit -m 'Update SEC snapshot'; git push; fi
