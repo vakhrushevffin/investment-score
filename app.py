@@ -48,7 +48,7 @@ for col in ('score','partial_score','ranking_score','price','completeness','rsi1
 full=int(df.score.notna().sum());partial=int(df.score.isna().sum())
 a,b,c,d=st.columns(4)
 a.metric('Компаний',len(df));b.metric('Полный Score',full);c.metric('Неполный Score',partial);d.metric('Котировки на',str(df.quote_date.mode().iloc[0]) if df.quote_date.notna().any() else '—')
-st.info('Все 28 акций включены в единый рейтинг. Неполный Score — средневзвешенное только доступных факторов, НЕ подтверждённый полный Score. Ранги разных степеней полноты несопоставимы по надёжности.')
+st.info('Полный Score означает наличие четырёх вычислимых факторов, а НЕ ручную верификацию отчётности. Компании с неполными данными и банки остаются в рейтинге. Все 28 акций включены в единый рейтинг. Неполный Score — средневзвешенное только доступных факторов, НЕ подтверждённый полный Score. Ранги разных степеней полноты несопоставимы по надёжности.')
 
 page=st.tabs(['🏆 Рейтинг','📈 Компания','🧮 Размер позиции','🗂️ История и данные'])
 with page[0]:
@@ -59,7 +59,7 @@ with page[0]:
     if show=='Полный Score':shown=shown[shown.score.notna()]
     if show=='Неполный Score':shown=shown[shown.score.isna()]
     if query:shown=shown[shown.ticker.str.contains(query.upper(),regex=False)]
-    table=shown[['rank','ticker','ranking_score','score','partial_score','completeness','quality','growth','valuation','momentum','price','quote_date','status','flags']].copy()
+    table=shown[['rank','ticker','ranking_score','score','partial_score','completeness','quality','growth','valuation','momentum','price','quote_date','status','validation_flags','ttm_target_end','flags']].copy()
     st.dataframe(table,hide_index=True,use_container_width=True,column_config={'ranking_score':st.column_config.NumberColumn('Рейтинговый балл',format='%.2f'),'score':st.column_config.NumberColumn('Полный Score',format='%.2f'),'partial_score':st.column_config.NumberColumn('Частичный Score',format='%.2f'),'completeness':st.column_config.ProgressColumn('Полнота, %',min_value=0,max_value=1)})
     fig=px.bar(shown.head(28),x='ticker',y='ranking_score',color='completeness',color_continuous_scale='Teal',title='Рейтинговый балл: полный или частичный')
     fig.update_layout(height=410,xaxis_title='',yaxis_title='Балл / 100')
@@ -73,7 +73,7 @@ with page[1]:
     z.metric('Полнота',f"{r.completeness:.0%}")
     factor=pd.DataFrame({'Фактор':['Quality','Growth','Valuation','Momentum'],'Балл':[r.quality,r.growth,r.valuation,r.momentum]})
     st.plotly_chart(px.bar(factor,x='Фактор',y='Балл',range_y=[0,100],title='Структура Investment Score'),use_container_width=True)
-    st.caption(f"Последняя дата цены: {r.quote_date} · SEC: {r.status} · Флаги: {r.flags}")
+    st.caption(f"Последняя дата цены: {r.quote_date} · SEC: {r.status} · Проверка: {r.validation_flags} · Флаги: {r.flags}")
     st.subheader('История цены (по запросу)')
     if st.button('Загрузить график цены',key='pricechart'):
         try:
@@ -104,7 +104,7 @@ with page[2]:
     try:fresh=(dt.date.today()-dt.date.fromisoformat(str(r.quote_date))).days<=7
     except:pass
     fullscore=pd.notna(r.score)
-    clear=str(r.status) in ('AUTOMATED_PASS','AUTOMATED_CHECK_ONLY') and (pd.isna(r.flags) or not str(r.flags).strip())
+    clear=str(r.status) == 'AUTOMATED_CHECK_ONLY' and (pd.isna(r.flags) or not str(r.flags).strip()) and (pd.isna(r.validation_flags) or not str(r.validation_flags).strip())
     signal='РАССМОТРЕТЬ' if fullscore and clear and fresh and trend and r.score>=60 else ('НАБЛЮДАТЬ' if fullscore else 'НЕТ СИГНАЛА — НЕДОСТАТОЧНО ДАННЫХ')
     if not fresh:signal='НЕТ СИГНАЛА — УСТАРЕВШАЯ ЦЕНА'
     st.metric('Предварительное решение',signal)
@@ -125,6 +125,8 @@ with page[3]:
         approvals=pd.DataFrame(st.session_state.approvals.values())
         st.dataframe(approvals,use_container_width=True)
         st.download_button('Скачать решения управляющего CSV',approvals.to_csv(index=False).encode('utf-8-sig'),'manager_decisions.csv','text/csv')
-    if not st.session_state.logs.empty:st.dataframe(st.session_state.logs,use_container_width=True)
+    if not st.session_state.logs.empty:
+        st.dataframe(st.session_state.logs,use_container_width=True)
+        st.download_button('Скачать журнал обновления CSV',st.session_state.logs.to_csv(index=False).encode('utf-8-sig'),'sec_refresh_log.csv','text/csv')
     else:st.caption('Обновления в этой сессии пока не выполнялись.')
     st.warning('Обновление финансовых данных не заменяет ручную сверку нестандартных SEC-тегов, классов акций и банковской методологии. Для реальных клиентских портфелей нужен защищённый сервер и постоянная база данных.')
