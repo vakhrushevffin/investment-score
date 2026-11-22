@@ -1,0 +1,15 @@
+
+name: Safe Refresh Tests
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  register:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Confirm workflow registration
+        run: echo "Safe Refresh workflow registered"
