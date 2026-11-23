@@ -26,7 +26,7 @@ jobs:
         run: python -m py_compile scripts/test_live_prices.py
       - name: Fetch and validate 28 stocks plus SPY
         id: live
-        run: python scripts/test_live_prices.py --output-dir "$RUNNER_TEMP/live-prices-report"
+        run: python .github/workflows/test_live_prices.py --output-dir "$RUNNER_TEMP/live-prices-report"
       - name: Upload validation report even if checks fail
         if: always()
         uses: actions/upload-artifact@v4
