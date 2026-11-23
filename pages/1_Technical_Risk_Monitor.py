@@ -81,7 +81,7 @@ c=c[selected];reds=reds[selected];state=state[selected];ma200=ma200[selected]
 last=c.index.max(); st.caption(f'Источник: {source} · Последняя дата: {last:%d.%m.%Y} · {len(c.columns)} акций · исторические данные, не онлайн-сигналы')
 if (pd.Timestamp.today().normalize()-last).days>7: st.warning('Котировки старше 7 календарных дней. Сигналы нельзя использовать как актуальные.')
 latest=state.loc[last];lastred=reds.loc[last]
-watch=st.multiselect('Акции для наблюдения',list(c.columns),default=list(c.columns)[:min(20,len(c.columns))])
+watch=st.multiselect('Акции для наблюдения',list(c.columns),default=list(c.columns))
 if not watch:st.stop()
 summary=pd.DataFrame({'Тикер':watch,'Режим':[latest[t] for t in watch],'Красных из 7':[int(lastred[t]) if pd.notna(lastred[t]) else None for t in watch], 'Закрытие':[float(c.loc[last,t]) if pd.notna(c.loc[last,t]) else None for t in watch], 'Дата цены':[raw.loc[raw.ticker.eq(t),'date'].max().date().isoformat() if raw.ticker.eq(t).any() else None for t in watch]})
 col1,col2,col3=st.columns(3)
