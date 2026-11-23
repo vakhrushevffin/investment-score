@@ -156,15 +156,21 @@ def run(registry, archive, output, lookback_days, max_stale_days, fetch=fetch_on
             print(f"{ticker}: {row['status']}; appended={row['appended_rows']}", flush=True)
         if errors:
             raise ValueError(f'{len(errors)} ticker checks failed; no candidate archive produced')
-        candidate = pd.concat([old, *additions], ignore_index=True)
+        nonempty_additions = [a for a in additions if not a.empty]
+        candidate = pd.concat([old, *nonempty_additions], ignore_index=True) if nonempty_additions else old.copy()
         candidate = candidate.sort_values(['ticker', 'date']).reset_index(drop=True)
         if list(candidate.columns) != archive_columns:
             raise ValueError('Candidate archive schema/order differs from baseline')
+        # Legacy archives may contain blank corporate-action cells. Preserve them
+        # exactly; require valid values only in newly appended rows.
         for field in ACTION_FIELDS:
             if field in candidate.columns:
-                candidate[field] = pd.to_numeric(candidate[field], errors='coerce')
-                if candidate[field].isna().any():
-                    raise ValueError(f'Invalid {field} in candidate')
+                original = candidate[field]
+                numeric = pd.to_numeric(original, errors='coerce')
+                unexpected = original.notna() & numeric.isna()
+                if unexpected.any():
+                    raise ValueError(f'Non-numeric {field} in candidate')
+                candidate[field] = numeric
         check_prices(candidate, 'Candidate')
         if len(candidate) != len(old) + sum(len(a) for a in additions):
             raise ValueError('Unexpected candidate row count')
