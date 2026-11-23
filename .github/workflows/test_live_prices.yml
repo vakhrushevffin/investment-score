@@ -1,0 +1,40 @@
+name: Test Live Prices
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test-live-prices:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout selected branch (read-only)
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - name: Install dependencies
+        run: python -m pip install 'pandas>=2.1,<3' 'yfinance>=0.2.54,<2'
+      - name: Check script syntax
+        run: python -m py_compile scripts/test_live_prices.py
+      - name: Fetch and validate 28 stocks plus SPY
+        id: live
+        run: python scripts/test_live_prices.py --output-dir "$RUNNER_TEMP/live-prices-report"
+      - name: Upload validation report even if checks fail
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-live-prices-report-${{ github.run_number }}
+          path: ${{ runner.temp }}/live-prices-report/
+          if-no-files-found: warn
+          retention-days: 30
+      - name: Verify tracked files are unchanged
+        if: always()
+        run: git diff --exit-code -- data/daily_prices.csv.gz data/baseline.csv data/tickers.csv
