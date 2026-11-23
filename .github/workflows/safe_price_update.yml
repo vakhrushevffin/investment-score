@@ -1,0 +1,42 @@
+name: Safe Price Update (Dry Run)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: safe-price-update-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  validate-and-stage:
+    if: github.ref == 'refs/heads/investment-score-v2'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout selected branch
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: requirements.txt
+      - name: Install quote dependencies
+        run: python -m pip install 'pandas>=2.2,<3' 'yfinance>=0.2.65,<2'
+      - name: Prepare candidate archive without repository writes
+        run: |
+          python scripts/safe_price_update.py \
+            --registry data/tickers.csv \
+            --archive data/daily_prices.csv.gz \
+            --output-dir /tmp/safe-price-update
+      - name: Upload validation reports and candidate
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: safe-price-update-${{ github.run_number }}
+          path: /tmp/safe-price-update/
+          if-no-files-found: warn
+          retention-days: 14
