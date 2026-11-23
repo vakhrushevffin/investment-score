@@ -10,6 +10,7 @@ import pandas as pd
 ROOT = Path(__file__).resolve().parents[1]
 COLS = ['date', 'ticker', 'open', 'high', 'low', 'close', 'adj_close', 'volume']
 NUM = ['open', 'high', 'low', 'close', 'adj_close', 'volume']
+ACTION_FIELDS = ['dividends', 'splits', 'capital_gains']
 
 
 def registry_symbols(path):
@@ -53,9 +54,13 @@ def load_archive(path):
     if not path.is_file():
         raise FileNotFoundError(f'Archive missing: {path}')
     old = pd.read_csv(path)
-    if set(old.columns) != set(COLS):
-        raise ValueError(f'Archive schema mismatch; expected {COLS}, got {list(old.columns)}')
-    old = old[COLS].copy()
+    if len(old.columns) != len(set(old.columns)):
+        raise ValueError('Archive contains duplicate column names')
+    missing = set(COLS) - set(old.columns)
+    if missing:
+        raise ValueError(f'Archive missing required columns: {sorted(missing)}')
+    # Preserve the exact existing schema and column order.
+    old = old.copy()
     old['date'] = dates(old.date)
     old['ticker'] = old.ticker.astype('string').str.strip().str.upper()
     for c in NUM:
@@ -66,7 +71,7 @@ def load_archive(path):
 
 def fetch_one(ticker, start):
     import yfinance as yf
-    raw = yf.Ticker(ticker).history(start=start, auto_adjust=False, actions=False)
+    raw = yf.Ticker(ticker).history(start=start, auto_adjust=False, actions=True)
     if raw is None or raw.empty:
         raise ValueError('Empty Yahoo response')
     x = raw.reset_index()
@@ -81,7 +86,8 @@ def fetch_one(ticker, start):
     x['date'] = pd.to_datetime(x.date, errors='coerce').dt.tz_localize(None).dt.normalize()
     for c in NUM:
         x[c] = pd.to_numeric(x[c], errors='coerce')
-    return x[COLS]
+    # Keep available corporate-action columns for candidate schema alignment.
+    return x
 
 
 def run(registry, archive, output, lookback_days, max_stale_days, fetch=fetch_one):
@@ -98,6 +104,10 @@ def run(registry, archive, output, lookback_days, max_stale_days, fetch=fetch_on
         # Download overlapping recent history, including holidays/weekends.
         start = (today - dt.timedelta(days=lookback_days)).isoformat()
         additions = []
+        archive_columns = list(old.columns)
+        unknown_extra = set(archive_columns) - set(COLS) - set(ACTION_FIELDS)
+        if unknown_extra:
+            raise ValueError(f'Unsupported archive extra fields: {sorted(unknown_extra)}')
         for ticker in symbols:
             old_t = old.loc[old.ticker.eq(ticker)]
             row = {'ticker': ticker, 'status': 'FAIL', 'baseline_latest': old_t.date.max().date().isoformat(),
@@ -128,6 +138,14 @@ def run(registry, archive, output, lookback_days, max_stale_days, fetch=fetch_on
                 if not historical_live_only.empty:
                     raise ValueError(f'{len(historical_live_only)} unexpected historical dates; manual review required')
                 new = live.loc[live.date.gt(old_t.date.max())].copy()
+                # yfinance may omit action columns when no events occurred.
+                # Missing action columns represent zero events, not missing prices.
+                for field in ACTION_FIELDS:
+                    if field in archive_columns:
+                        if field not in new.columns:
+                            new[field] = 0.0
+                        new[field] = pd.to_numeric(new[field], errors='coerce').fillna(0.0)
+                new = new[archive_columns]
                 row['appended_rows'] = len(new)
                 additions.append(new)
                 row['status'] = 'PASS'
@@ -140,6 +158,13 @@ def run(registry, archive, output, lookback_days, max_stale_days, fetch=fetch_on
             raise ValueError(f'{len(errors)} ticker checks failed; no candidate archive produced')
         candidate = pd.concat([old, *additions], ignore_index=True)
         candidate = candidate.sort_values(['ticker', 'date']).reset_index(drop=True)
+        if list(candidate.columns) != archive_columns:
+            raise ValueError('Candidate archive schema/order differs from baseline')
+        for field in ACTION_FIELDS:
+            if field in candidate.columns:
+                candidate[field] = pd.to_numeric(candidate[field], errors='coerce')
+                if candidate[field].isna().any():
+                    raise ValueError(f'Invalid {field} in candidate')
         check_prices(candidate, 'Candidate')
         if len(candidate) != len(old) + sum(len(a) for a in additions):
             raise ValueError('Unexpected candidate row count')
