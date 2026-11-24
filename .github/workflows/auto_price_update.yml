@@ -15,6 +15,8 @@ jobs:
     if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/investment-score-v2'
     runs-on: ubuntu-latest
     timeout-minutes: 25
+    env:
+      PYTHONDONTWRITEBYTECODE: "1"
     steps:
       - name: Checkout test branch only
         uses: actions/checkout@v4
@@ -43,17 +45,24 @@ jobs:
             echo 'No new sessions; no commit.'
             exit 0
           fi
-          test "$(git branch --show-current)" = investment-score-v2
-          test "$(git rev-parse HEAD)" = "$BASE_COMMIT"
-          test "$(sha256sum data/daily_prices.csv.gz | cut -d' ' -f1)" = "$BASE_HASH"
+          fail() { echo "::error::$1"; exit 1; }
+          test "$(git branch --show-current)" = investment-score-v2 || fail "Wrong local branch"
+          test "$(git rev-parse HEAD)" = "$BASE_COMMIT" || fail "Local HEAD changed"
+          test "$(sha256sum data/daily_prices.csv.gz | cut -d' ' -f1)" = "$BASE_HASH" || fail "Baseline archive hash changed"
           git fetch origin investment-score-v2
-          test "$(git rev-parse FETCH_HEAD)" = "$BASE_COMMIT"
-          test -z "$(git status --porcelain)"
+          echo "Expected commit: $BASE_COMMIT"
+          echo "Remote commit: $(git rev-parse FETCH_HEAD)"
+          test "$(git rev-parse FETCH_HEAD)" = "$BASE_COMMIT" || fail "Remote branch changed; start a fresh run"
+          status=$(git status --porcelain)
+          if [ -n "$status" ]; then
+            printf "%s\n" "$status"
+            fail "Working tree is not clean"
+          fi
           cp /tmp/safe-price-update/publish_daily_prices.csv.gz data/daily_prices.csv.gz
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add -- data/daily_prices.csv.gz
-          test "$(git diff --cached --name-only)" = data/daily_prices.csv.gz
+          test "$(git diff --cached --name-only)" = data/daily_prices.csv.gz || fail "Unexpected staged files or no archive change"
           git commit -m 'Update validated daily prices'
           git push origin HEAD:refs/heads/investment-score-v2
       - name: Upload reports
