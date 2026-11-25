@@ -22,6 +22,7 @@ def require(condition, message):
 
 def validate(archive, registry, report, expected_hash, now=None, fetch=fetch_one):
     require(digest(archive) == expected_hash, 'Baseline hash changed')
+    (report / 'publish_daily_prices.csv.gz').unlink(missing_ok=True)
     summary = json.loads((report / 'summary.json').read_text())
     symbols = registry_symbols(registry)
     require(summary['result'] == 'PASS' and summary['checked'] == summary['passed'] == len(symbols), 'Loader did not pass')
@@ -56,19 +57,50 @@ def validate(archive, registry, report, expected_hash, now=None, fetch=fetch_one
     for day, group in added.groupby('date'):
         require(set(group.ticker) == set(symbols), f'Incomplete session {day}')
     if not added.empty:
-        for col in ACTION_FIELDS:
-            if col in added:
-                values = pd.to_numeric(added[col], errors='coerce')
-                require(np.isfinite(values).all() and values.eq(0).all(), f'Corporate action or invalid {col}: manual review required')
-        # Independent live overlap check: append-only adjusted history must stay consistent.
+        events = []
+        issues = []
+        def flag(ticker, date, reason):
+            issues.append({'ticker': ticker, 'date': str(date), 'reason': reason})
+        for row in added.itertuples():
+            for col in ACTION_FIELDS:
+                if col not in added:
+                    flag(row.ticker, row.date, f'Missing action field {col}')
+                    continue
+                value = pd.to_numeric(getattr(row, col), errors='coerce')
+                if not np.isfinite(value) or value < 0:
+                    flag(row.ticker, row.date, f'Invalid {col}: {value}')
+                elif value != 0:
+                    events.append({'ticker': row.ticker, 'date': str(row.date), 'field': col, 'value': float(value)})
+                    if col != 'dividends':
+                        flag(row.ticker, row.date, f'{col}: manual review required')
+                    elif value / row.close > 0.01:
+                        flag(row.ticker, row.date, 'Dividend exceeds 1% of close: manual review required')
         for ticker in symbols:
-            live = fetch(ticker, (last - pd.Timedelta(days=14)).date().isoformat())
-            check_prices(live, ticker, [ticker])
-            reference = new[(new.ticker == ticker) & (new.date >= live.date.min())]
-            merged = reference.merge(live, on=keys, suffixes=('_stored','_live'))
-            require(len(merged) == len(reference) and len(merged) >= 3, f'{ticker}: incomplete live overlap')
-            for col in ['close','adj_close']:
-                np.testing.assert_allclose(merged[col+'_stored'], merged[col+'_live'], rtol=1e-5, atol=1e-5, err_msg=f'{ticker}: {col} revision; manual review')
+            try:
+                live = fetch(ticker, (last - pd.Timedelta(days=14)).date().isoformat())
+                check_prices(live, ticker, [ticker])
+                require(np.isfinite(live[NUM]).all().all(), 'Nonfinite live prices')
+                reference = new[(new.ticker == ticker) & (new.date >= last - pd.Timedelta(days=14))]
+                merged = reference.merge(live, on=keys, suffixes=('_stored','_live'))
+                require(len(merged) == len(reference) and len(merged) >= 3, 'Incomplete live overlap')
+                for col in ['close','adj_close']:
+                    if not np.allclose(merged[col+'_stored'], merged[col+'_live'], rtol=1e-5, atol=1e-5):
+                        flag(ticker, '', f'{col} revision: manual review required')
+                fresh = merged[merged.date > last]
+                for col in ACTION_FIELDS:
+                    require(col in reference, f'Missing stored {col}')
+                    if col not in live:
+                        # Missing event columns are not independent evidence of zero.
+                        flag(ticker, '', f'Missing live {col}')
+                        continue
+                    x = pd.to_numeric(fresh[col+'_stored'], errors='coerce')
+                    y = pd.to_numeric(fresh[col+'_live'], errors='coerce')
+                    if not np.isfinite(y).all() or not np.allclose(x,y,rtol=1e-8,atol=1e-8):
+                        flag(ticker, '', f'{col} mismatch on new sessions')
+            except Exception as exc:
+                flag(ticker, '', str(exc))
+        (report / 'corporate_actions.json').write_text(json.dumps({'events':events,'issues':issues,'policy':'append-only; dividends <=1% of close; repeated provider check, not issuer confirmation'},indent=2))
+        require(not issues, f'Corporate action / overlap review required: {len(issues)} issues; see corporate_actions.json')
     require(digest(archive) == expected_hash, 'Baseline changed during validation')
     if len(added):
         # Preserve original CSV values exactly, including blanks and precision.
