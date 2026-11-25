@@ -4,6 +4,7 @@ sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'scripts'))
 import pandas as pd
 from reconcile_prices import reconcile, normalize
 from safe_price_update import load_archive
+from publish_price_update import compare_reconciled
 class Tests(unittest.TestCase):
  def setUp(self):
   self.a=pd.DataFrame({'date':pd.date_range('2026-01-01',periods=3),'ticker':'X','open':100.,'high':101.,'low':99.,'close':100.,'adj_close':100.,'volume':1000.,'dividends':0.,'splits':0.,'capital_gains':0.})
@@ -43,6 +44,14 @@ class Tests(unittest.TestCase):
  def test_negative_volume(self):
   live=self.live(); live.loc[0,'volume']=-1
   with self.assertRaises(ValueError): reconcile(self.a,live)
+ def test_precision(self):
+  b=self.a.copy(); b.adj_close*=1.000002; d=[]; compare_reconciled(self.a,b,"X",d); self.assertTrue(d[0]["pass"])
+ def test_precision_reject(self):
+  b=self.a.copy(); b.adj_close*=1.001
+  with self.assertRaises(ValueError): compare_reconciled(self.a,b,"X",[])
+ def test_precision_other_fields(self):
+  b=self.a.copy(); b.volume+=1
+  with self.assertRaises(AssertionError): compare_reconciled(self.a,b,"X",[])
  def test_archive(self):
   a=load_archive(Path(__file__).resolve().parents[1]/'data/daily_prices.csv.gz'); self.assertGreaterEqual(len(a),92719)
 if __name__=='__main__': unittest.main()
