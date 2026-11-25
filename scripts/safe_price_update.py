@@ -6,6 +6,7 @@ import sys
 from pathlib import Path
 
 import pandas as pd
+import numpy as np
 from reconcile_prices import normalize, reconcile, same, NUM as RECON_NUM
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -40,7 +41,7 @@ def check_prices(df, label, symbols=None):
         raise ValueError(f'{label}: empty dataset')
     if df[['date', 'ticker']].isna().any().any() or df.duplicated(['ticker', 'date']).any():
         raise ValueError(f'{label}: invalid/duplicate ticker-date')
-    if df[NUM].isna().any().any():
+    if not np.isfinite(df[NUM]).all().all():
         raise ValueError(f'{label}: missing numeric fields')
     if (df[NUM[:-1]] <= 0).any().any() or (df.volume < 0).any():
         raise ValueError(f'{label}: invalid price/volume')
@@ -95,7 +96,7 @@ def run(registry, archive, output, lookback_days, max_stale_days, fetch=fetch_on
     output.mkdir(parents=True, exist_ok=True)
     (output / 'candidate_daily_prices.csv.gz').unlink(missing_ok=True)
     summary = {'result': 'FAIL', 'mode': 'DRY_RUN', 'baseline_unchanged': True}
-    checks, errors = [], []
+    checks, errors, volume_notes = [], [], []
     try:
         symbols = registry_symbols(registry)
         old = load_archive(archive)
@@ -122,7 +123,9 @@ def run(registry, archive, output, lookback_days, max_stale_days, fetch=fetch_on
                 if set(expected.date)!=set(live.loc[live.date<=old_t.date.max(),'date']): raise ValueError('Historical session mismatch')
                 fresh=live[live.date>old_t.date.max()]
                 event=(fresh[ACTION_FIELDS]!=0).any().any()
-                changed=any(not same(overlap[c+'_base'],overlap[c+'_live'],rtol=5e-5 if c=='adj_close' else 2e-5) for c in NUM)
+                for d,base_v,live_v in zip(overlap.date,overlap.volume_base,overlap.volume_live):
+                    if base_v!=live_v: volume_notes.append({'ticker':ticker,'date':str(d.date()),'baseline_volume':float(base_v),'provider_volume':float(live_v)})
+                changed=any(not same(overlap[c+'_base'],overlap[c+'_live'],rtol=5e-5 if c=='adj_close' else 2e-5) for c in NUM if c!='volume')
                 if event or changed:
                     full=normalize(fetch(ticker,old_t.date.min().date().isoformat()))
                     check_prices(full,ticker,[ticker])
@@ -163,6 +166,7 @@ def run(registry, archive, output, lookback_days, max_stale_days, fetch=fetch_on
                        note='Candidate artifact only; no commit or production update.')
     except Exception as exc:
         summary['error'] = str(exc)[:500]
+    pd.DataFrame(volume_notes,columns=['ticker','date','baseline_volume','provider_volume']).to_csv(output/'volume_revisions.csv',index=False)
     pd.DataFrame(checks).to_csv(output / 'ticker_checks.csv', index=False)
     pd.DataFrame(errors, columns=['ticker', 'error']).to_csv(output / 'errors.csv', index=False)
     summary['date_utc'] = dt.datetime.now(dt.timezone.utc).isoformat()
