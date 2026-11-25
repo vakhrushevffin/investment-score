@@ -28,6 +28,21 @@ class Tests(unittest.TestCase):
  def test_alias(self): self.assertIn('splits',normalize(self.live().rename(columns={'splits':'stock_splits'}).drop(columns='capital_gains')))
  def test_missing_split(self):
   with self.assertRaises(ValueError): normalize(self.live().drop(columns='splits'))
+ def test_volume_revision_preserved(self):
+  live=self.live(); live.loc[0,'volume']=9000; live.loc[3,'volume']=1234
+  out=reconcile(self.a,live); self.assertEqual(out.volume.tolist(),[1000,1000,1000,1234])
+ def test_dividend_and_volume(self):
+  live=self.live(div=30); live.loc[0,'volume']=2000
+  out=reconcile(self.a,live); self.assertEqual(out.volume.iloc[0],1000); self.assertAlmostEqual(out.adj_close.iloc[0],70)
+ def test_split_volume_scaled(self):
+  live=self.live(split=10); live.loc[:2,'volume']=10000
+  self.assertEqual(reconcile(self.a,live).volume.iloc[0],10000)
+ def test_split_volume_invalid(self):
+  live=self.live(split=10); live.loc[0,'volume']=12345
+  with self.assertRaises(ValueError): reconcile(self.a,live)
+ def test_negative_volume(self):
+  live=self.live(); live.loc[0,'volume']=-1
+  with self.assertRaises(ValueError): reconcile(self.a,live)
  def test_archive(self):
   a=load_archive(Path(__file__).resolve().parents[1]/'data/daily_prices.csv.gz'); self.assertGreaterEqual(len(a),92719)
 if __name__=='__main__': unittest.main()
