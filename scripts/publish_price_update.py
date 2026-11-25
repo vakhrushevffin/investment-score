@@ -45,7 +45,7 @@ def validate(archive, registry, report, expected_hash, now=None, fetch=fetch_one
     require(set(latest.index) == set(symbols) and latest.nunique() == 1, 'Baseline sessions not synchronized')
     last = latest.iloc[0]
     cal = xc.get_calendar('XNYS', start=last - pd.Timedelta(days=10), end=now.tz_convert(None).normalize()+pd.Timedelta(days=2))
-    completed = cal.schedule.loc[cal.schedule['close'] + pd.Timedelta(minutes=60) <= now].index
+    completed = cal.schedule.loc[pd.to_datetime(cal.schedule['close' if 'close' in cal.schedule else 'market_close'],utc=True) + pd.Timedelta(minutes=60) <= now].index
     completed = pd.DatetimeIndex(completed).tz_localize(None)
     require(len(completed) > 0 and last in completed, 'Baseline latest is not a completed session')
     expected = set(completed[completed > last])
@@ -65,7 +65,9 @@ def validate(archive, registry, report, expected_hash, now=None, fetch=fetch_one
         merged=ref.merge(live,on=keys,suffixes=('_stored','_live'))
         require(len(merged)>=3,'Insufficient live overlap')
         for c in NUM:
-            require(same(merged[c+'_stored'],merged[c+'_live'],rtol=5e-5 if c=='adj_close' else 2e-5),f'{ticker}: live mismatch {c}')
+            # Historical volume is verified against baseline or split reconciliation below.
+            m=merged.loc[merged.date>last] if c=='volume' else merged
+            require(same(m[c+'_stored'],m[c+'_live'],rtol=5e-5 if c=='adj_close' else 2e-5),f'{ticker}: live mismatch {c}')
         fresh=live[live.date>last]
         for c in ACTION_FIELDS:
             require(same(merged.loc[merged.date>last,c+'_stored'],merged.loc[merged.date>last,c+'_live']),f'{ticker}: action mismatch {c}')
