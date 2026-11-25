@@ -6,6 +6,7 @@ import sys
 from pathlib import Path
 
 import pandas as pd
+from reconcile_prices import normalize, reconcile, same, NUM as RECON_NUM
 
 ROOT = Path(__file__).resolve().parents[1]
 COLS = ['date', 'ticker', 'open', 'high', 'low', 'close', 'adj_close', 'volume']
@@ -87,11 +88,12 @@ def fetch_one(ticker, start):
     for c in NUM:
         x[c] = pd.to_numeric(x[c], errors='coerce')
     # Keep available corporate-action columns for candidate schema alignment.
-    return x
+    return normalize(x)
 
 
 def run(registry, archive, output, lookback_days, max_stale_days, fetch=fetch_one):
     output.mkdir(parents=True, exist_ok=True)
+    (output / 'candidate_daily_prices.csv.gz').unlink(missing_ok=True)
     summary = {'result': 'FAIL', 'mode': 'DRY_RUN', 'baseline_unchanged': True}
     checks, errors = [], []
     try:
@@ -102,62 +104,40 @@ def run(registry, archive, output, lookback_days, max_stale_days, fetch=fetch_on
             raise ValueError(f'Missing baseline symbols: {sorted(missing)}')
         today = dt.datetime.now(dt.timezone.utc).date()
         # Download overlapping recent history, including holidays/weekends.
-        start = (today - dt.timedelta(days=lookback_days)).isoformat()
+        start = min(today - dt.timedelta(days=lookback_days), old.date.max().date() - dt.timedelta(days=14)).isoformat()
         additions = []
         archive_columns = list(old.columns)
-        unknown_extra = set(archive_columns) - set(COLS) - set(ACTION_FIELDS)
-        if unknown_extra:
-            raise ValueError(f'Unsupported archive extra fields: {sorted(unknown_extra)}')
         for ticker in symbols:
             old_t = old.loc[old.ticker.eq(ticker)]
-            row = {'ticker': ticker, 'status': 'FAIL', 'baseline_latest': old_t.date.max().date().isoformat(),
-                   'live_latest': '', 'overlap_rows': 0, 'appended_rows': 0, 'max_overlap_close_change_pct': None}
+            row = {'ticker': ticker, 'status': 'FAIL', 'appended_rows': 0}
             try:
-                live = fetch(ticker, start)
+                live = normalize(fetch(ticker, start))
                 check_prices(live, ticker, [ticker])
                 newest = live.date.max()
-                row['live_latest'] = newest.date().isoformat()
-                if newest.date() > today or (today - newest.date()).days > max_stale_days:
-                    raise ValueError(f'Future/stale latest session: {newest.date()}')
-                if newest < old_t.date.max():
-                    raise ValueError('Live download ends before baseline')
-                overlap = live.merge(old_t, on=['ticker', 'date'], suffixes=('_live', '_base'))
-                row['overlap_rows'] = len(overlap)
-                if len(overlap) < 3:
-                    raise ValueError(f'Insufficient overlapping sessions: {len(overlap)} < 3')
-                # A large revision requires manual investigation; never overwrite historical rows.
-                close_change = ((overlap.close_live / overlap.close_base) - 1).abs() * 100
-                row['max_overlap_close_change_pct'] = round(float(close_change.max()), 6)
-                if close_change.max() > 2.0:
-                    raise ValueError(f'Raw close revision exceeds 2%: {close_change.max():.3f}%')
-                missing_old_dates = set(old_t.loc[old_t.date.ge(live.date.min()) & old_t.date.le(newest)].date) - set(live.date)
-                if missing_old_dates:
-                    raise ValueError(f'{len(missing_old_dates)} baseline dates absent from live download')
-                # Reject unexplained gaps inside the existing baseline range.
-                historical_live_only = live.loc[live.date.le(old_t.date.max()) & ~live.date.isin(old_t.date)]
-                if not historical_live_only.empty:
-                    raise ValueError(f'{len(historical_live_only)} unexpected historical dates; manual review required')
-                new = live.loc[live.date.gt(old_t.date.max())].copy()
-                # yfinance may omit action columns when no events occurred.
-                # Missing action columns represent zero events, not missing prices.
-                for field in ACTION_FIELDS:
-                    if field in archive_columns:
-                        if field not in new.columns:
-                            new[field] = 0.0
-                        new[field] = pd.to_numeric(new[field], errors='coerce').fillna(0.0)
-                new = new[archive_columns]
-                row['appended_rows'] = len(new)
-                additions.append(new)
-                row['status'] = 'PASS'
+                if newest.date() > today or (today-newest.date()).days > max_stale_days:
+                    raise ValueError('Future/stale session')
+                overlap = old_t.merge(live,on=['ticker','date'],suffixes=('_base','_live'))
+                if len(overlap)<3 or newest<old_t.date.max(): raise ValueError('Insufficient overlap')
+                expected = old_t[old_t.date>=live.date.min()]
+                if set(expected.date)!=set(live.loc[live.date<=old_t.date.max(),'date']): raise ValueError('Historical session mismatch')
+                fresh=live[live.date>old_t.date.max()]
+                event=(fresh[ACTION_FIELDS]!=0).any().any()
+                changed=any(not same(overlap[c+'_base'],overlap[c+'_live'],rtol=5e-5 if c=='adj_close' else 2e-5) for c in NUM)
+                if event or changed:
+                    full=normalize(fetch(ticker,old_t.date.min().date().isoformat()))
+                    check_prices(full,ticker,[ticker])
+                    result=reconcile(old_t,full)
+                else:
+                    result=pd.concat([old_t,fresh[archive_columns]],ignore_index=True)
+                additions.append(result)
+                row.update(status='PASS',appended_rows=len(result)-len(old_t))
             except Exception as exc:
-                errors.append({'ticker': ticker, 'error': str(exc)[:500]})
-                row['error'] = str(exc)[:500]
+                errors.append({'ticker':ticker,'error':str(exc)})
+                row['error']=str(exc)
             checks.append(row)
-            print(f"{ticker}: {row['status']}; appended={row['appended_rows']}", flush=True)
         if errors:
             raise ValueError(f'{len(errors)} ticker checks failed; no candidate archive produced')
-        nonempty_additions = [a for a in additions if not a.empty]
-        candidate = pd.concat([old, *nonempty_additions], ignore_index=True) if nonempty_additions else old.copy()
+        candidate = pd.concat([old.loc[~old.ticker.isin(symbols)], *additions], ignore_index=True)
         candidate = candidate.sort_values(['ticker', 'date']).reset_index(drop=True)
         if list(candidate.columns) != archive_columns:
             raise ValueError('Candidate archive schema/order differs from baseline')
@@ -172,13 +152,13 @@ def run(registry, archive, output, lookback_days, max_stale_days, fetch=fetch_on
                     raise ValueError(f'Non-numeric {field} in candidate')
                 candidate[field] = numeric
         check_prices(candidate, 'Candidate')
-        if len(candidate) != len(old) + sum(len(a) for a in additions):
+        if len(candidate) != len(old) + sum(r['appended_rows'] for r in checks):
             raise ValueError('Unexpected candidate row count')
         # Candidate written only into Actions artifact directory, never into data/.
         target = output / 'candidate_daily_prices.csv.gz'
         candidate.to_csv(target, index=False, compression='gzip', date_format='%Y-%m-%d')
         summary.update(result='PASS', checked=len(symbols), passed=len(symbols),
-                       appended_rows=sum(len(a) for a in additions), baseline_rows=len(old),
+                       appended_rows=sum(r['appended_rows'] for r in checks), baseline_rows=len(old),
                        candidate_rows=len(candidate), candidate_file=target.name,
                        note='Candidate artifact only; no commit or production update.')
     except Exception as exc:
