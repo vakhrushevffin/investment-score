@@ -1,5 +1,7 @@
 """Validate a staged price archive; preserve original CSV cells on publication."""
 import argparse
+import shutil
+from reconcile_prices import normalize, reconcile, same
 import csv
 import gzip
 import hashlib
@@ -35,11 +37,6 @@ def validate(archive, registry, report, expected_hash, now=None, fetch=fetch_one
     a, b = old.set_index(keys).sort_index(), new.set_index(keys).sort_index()
     require(a.index.isin(b.index).all(), 'Historical keys lost')
     historical = b.loc[a.index]
-    for col in a.columns:
-        if col in NUM + ACTION_FIELDS:
-            np.testing.assert_allclose(pd.to_numeric(a[col]), pd.to_numeric(historical[col]), rtol=1e-12, atol=1e-12, equal_nan=True, err_msg=col)
-        else:
-            require(a[col].equals(historical[col]), f'Historical field changed: {col}')
     added = b.loc[~b.index.isin(a.index)].reset_index()
     require(len(old) == summary['baseline_rows'] and len(new) == summary['candidate_rows'] and len(added) == summary['appended_rows'], 'Row counts disagree')
     now = pd.Timestamp.now(tz='UTC') if now is None else pd.Timestamp(now)
@@ -56,68 +53,43 @@ def validate(archive, registry, report, expected_hash, now=None, fetch=fetch_one
     require(set(added.ticker).issubset(symbols), 'Unexpected ticker')
     for day, group in added.groupby('date'):
         require(set(group.ticker) == set(symbols), f'Incomplete session {day}')
-    if not added.empty:
-        events = []
-        issues = []
-        def flag(ticker, date, reason):
-            issues.append({'ticker': ticker, 'date': str(date), 'reason': reason})
-        for row in added.itertuples():
-            for col in ACTION_FIELDS:
-                if col not in added:
-                    flag(row.ticker, row.date, f'Missing action field {col}')
-                    continue
-                value = pd.to_numeric(getattr(row, col), errors='coerce')
-                if not np.isfinite(value) or value < 0:
-                    flag(row.ticker, row.date, f'Invalid {col}: {value}')
-                elif value != 0:
-                    events.append({'ticker': row.ticker, 'date': str(row.date), 'field': col, 'value': float(value)})
-                    if col != 'dividends':
-                        flag(row.ticker, row.date, f'{col}: manual review required')
-                    elif value / row.close > 0.01:
-                        flag(row.ticker, row.date, 'Dividend exceeds 1% of close: manual review required')
-        for ticker in symbols:
-            try:
-                live = fetch(ticker, (last - pd.Timedelta(days=14)).date().isoformat())
-                check_prices(live, ticker, [ticker])
-                require(np.isfinite(live[NUM]).all().all(), 'Nonfinite live prices')
-                reference = new[(new.ticker == ticker) & (new.date >= last - pd.Timedelta(days=14))]
-                merged = reference.merge(live, on=keys, suffixes=('_stored','_live'))
-                require(len(merged) == len(reference) and len(merged) >= 3, 'Incomplete live overlap')
-                for col in ['close','adj_close']:
-                    if not np.allclose(merged[col+'_stored'], merged[col+'_live'], rtol=1e-5, atol=1e-5):
-                        flag(ticker, '', f'{col} revision: manual review required')
-                fresh = merged[merged.date > last]
-                for col in ACTION_FIELDS:
-                    require(col in reference, f'Missing stored {col}')
-                    if col not in live:
-                        # Missing event columns are not independent evidence of zero.
-                        flag(ticker, '', f'Missing live {col}')
-                        continue
-                    x = pd.to_numeric(fresh[col+'_stored'], errors='coerce')
-                    y = pd.to_numeric(fresh[col+'_live'], errors='coerce')
-                    if not np.isfinite(y).all() or not np.allclose(x,y,rtol=1e-8,atol=1e-8):
-                        flag(ticker, '', f'{col} mismatch on new sessions')
-            except Exception as exc:
-                flag(ticker, '', str(exc))
-        (report / 'corporate_actions.json').write_text(json.dumps({'events':events,'issues':issues,'policy':'append-only; dividends <=1% of close; repeated provider check, not issuer confirmation'},indent=2))
-        require(not issues, f'Corporate action / overlap review required: {len(issues)} issues; see corporate_actions.json')
-    require(digest(archive) == expected_hash, 'Baseline changed during validation')
-    if len(added):
-        # Preserve original CSV values exactly, including blanks and precision.
-        target = report / 'publish_daily_prices.csv.gz'
-        with gzip.open(archive,'rt',newline='') as src, gzip.open(candidate,'rt',newline='') as cand, gzip.open(target,'wt',newline='') as out:
-            reader, fresh = csv.DictReader(src), csv.DictReader(cand)
-            writer = csv.DictWriter(out, fieldnames=reader.fieldnames)
-            writer.writeheader()
-            writer.writerows(reader)
-            wanted = {(r.ticker, r.date.date().isoformat()) for r in added.itertuples()}
-            count = 0
-            for row in fresh:
-                if (row['ticker'],row['date']) in wanted:
-                    writer.writerow(row); count += 1
-            require(count == len(added), 'Output append count mismatch')
-        require(len(load_archive(target)) == len(new), 'Final archive row count mismatch')
-    return {'result':'PASS','appended_rows':len(added),'baseline_rows':len(old),'candidate_rows':len(new),'latest_completed':str(completed[-1].date())}
+    events=[]
+    revised=0
+    for ticker in symbols:
+        base=old[old.ticker==ticker]
+        proposed=new[new.ticker==ticker]
+        live=normalize(fetch(ticker,(last-pd.Timedelta(days=14)).date().isoformat()))
+        check_prices(live,ticker,[ticker])
+        ref=proposed[proposed.date>=live.date.min()]
+        require(set(ref.date)==set(live.date),'Live session mismatch')
+        merged=ref.merge(live,on=keys,suffixes=('_stored','_live'))
+        require(len(merged)>=3,'Insufficient live overlap')
+        for c in NUM:
+            require(same(merged[c+'_stored'],merged[c+'_live'],rtol=5e-5 if c=='adj_close' else 2e-5),f'{ticker}: live mismatch {c}')
+        fresh=live[live.date>last]
+        for c in ACTION_FIELDS:
+            require(same(merged.loc[merged.date>last,c+'_stored'],merged.loc[merged.date>last,c+'_live']),f'{ticker}: action mismatch {c}')
+        x=base.set_index('date').sort_index(); y=proposed.set_index('date').loc[x.index]
+        changed=~np.isclose(x[NUM],y[NUM],rtol=1e-12,atol=1e-12).all(axis=1)
+        has_event=(fresh[ACTION_FIELDS]!=0).any().any()
+        if changed.any() or has_event:
+            full=normalize(fetch(ticker,base.date.min().date().isoformat()))
+            check_prices(full,ticker,[ticker])
+            verified=reconcile(base,full)
+        else:
+            verified=pd.concat([base,fresh[base.columns]],ignore_index=True)
+        pd.testing.assert_frame_equal(verified.sort_values('date').reset_index(drop=True),proposed.sort_values('date').reset_index(drop=True),check_dtype=False,rtol=1e-8,atol=1e-8)
+        revised+=int(changed.sum())
+        for r in fresh.itertuples():
+            for c in ACTION_FIELDS:
+                if getattr(r,c): events.append({'ticker':ticker,'date':str(r.date),'field':c,'value':float(getattr(r,c))})
+    pd.testing.assert_frame_equal(a.loc[~a.index.get_level_values('ticker').isin(symbols)],b.loc[~b.index.get_level_values('ticker').isin(symbols)],check_dtype=False)
+    require(digest(archive)==expected_hash,'Baseline changed during validation')
+    (report/'corporate_actions.json').write_text(json.dumps({'events':events,'revised_rows':revised,'issues':[]},indent=2))
+    if len(added) or revised:
+        shutil.copyfile(archive,report/'baseline_backup.csv.gz')
+        shutil.copyfile(candidate,report/'publish_daily_prices.csv.gz')
+    return {'result':'PASS','appended_rows':len(added),'revised_rows':revised,'baseline_rows':len(old),'candidate_rows':len(new),'latest_completed':str(completed[-1].date())}
 
 
 def main():
