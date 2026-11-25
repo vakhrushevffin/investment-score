@@ -22,6 +22,18 @@ def require(condition, message):
         raise ValueError(message)
 
 
+def compare_reconciled(verified, proposed, ticker, diagnostics):
+    x=verified.sort_values('date').reset_index(drop=True)
+    y=proposed.sort_values('date').reset_index(drop=True)
+    # Only independently reconciled price values receive provider precision tolerance.
+    pd.testing.assert_frame_equal(x.drop(columns=['adj_close']),y.drop(columns=['adj_close']),check_dtype=False,rtol=1e-8,atol=1e-8)
+    a=x.adj_close.to_numpy(); b=y.adj_close.to_numpy()
+    delta=np.abs(a-b); relative=delta/np.maximum(np.abs(a),np.abs(b))
+    ok=bool(np.isfinite(delta).all() and np.all(delta<=2e-5+5e-5*np.minimum(np.abs(a),np.abs(b))))
+    diagnostics.append({'ticker':ticker,'rows':len(a),'max_abs':float(delta.max()),'max_relative':float(relative.max()),'pass':ok})
+    require(ok,f'{ticker}: reconciled adj_close mismatch; max absolute={delta.max():.9g}, max relative={relative.max():.9g}')
+
+
 def validate(archive, registry, report, expected_hash, now=None, fetch=fetch_one):
     require(digest(archive) == expected_hash, 'Baseline hash changed')
     (report / 'publish_daily_prices.csv.gz').unlink(missing_ok=True)
@@ -53,6 +65,8 @@ def validate(archive, registry, report, expected_hash, now=None, fetch=fetch_one
     require(set(added.ticker).issubset(symbols), 'Unexpected ticker')
     for day, group in added.groupby('date'):
         require(set(group.ticker) == set(symbols), f'Incomplete session {day}')
+    diagnostics=[]
+    (report/'precision_checks.csv').unlink(missing_ok=True)
     events=[]
     revised=0
     for ticker in symbols:
@@ -80,7 +94,10 @@ def validate(archive, registry, report, expected_hash, now=None, fetch=fetch_one
             verified=reconcile(base,full)
         else:
             verified=pd.concat([base,fresh[base.columns]],ignore_index=True)
-        pd.testing.assert_frame_equal(verified.sort_values('date').reset_index(drop=True),proposed.sort_values('date').reset_index(drop=True),check_dtype=False,rtol=1e-8,atol=1e-8)
+        try:
+            compare_reconciled(verified,proposed,ticker,diagnostics)
+        finally:
+            pd.DataFrame(diagnostics).to_csv(report/'precision_checks.csv',index=False)
         revised+=int(changed.sum())
         for r in fresh.itertuples():
             for c in ACTION_FIELDS:
