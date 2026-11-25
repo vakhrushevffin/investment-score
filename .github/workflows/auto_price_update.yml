@@ -28,6 +28,8 @@ jobs:
           python-version: '3.11'
       - name: Install dependencies
         run: python -m pip install 'pandas>=2.2,<3' 'yfinance>=0.2.65,<2' 'exchange-calendars>=4.9,<5'
+      - name: Test reconciliation
+        run: python -m unittest discover -s tests -v
       - name: Record baseline
         run: |
           echo "BASE_COMMIT=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
@@ -38,11 +40,11 @@ jobs:
       - name: Validate publication
         run: |
           python scripts/publish_price_update.py --registry data/tickers.csv --archive data/daily_prices.csv.gz --report /tmp/safe-price-update --expected-hash "$BASE_HASH"
-      - name: Publish only new sessions
+      - name: Publish validated changes
         run: |
           set -euo pipefail
-          if [ "$(python -c 'import json; print(json.load(open("/tmp/safe-price-update/publication_summary.json"))["appended_rows"])')" = 0 ]; then
-            echo 'No new sessions; no commit.'
+          if [ "$(python -c 'import json; print(json.load(open("/tmp/safe-price-update/publication_summary.json"))["appended_rows"]+json.load(open("/tmp/safe-price-update/publication_summary.json"))["revised_rows"])')" = 0 ]; then
+            echo 'No validated changes; no commit.'
             exit 0
           fi
           fail() { echo "::error::$1"; exit 1; }
