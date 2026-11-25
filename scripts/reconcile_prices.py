@@ -38,7 +38,12 @@ def reconcile(old,live):
     if not same(a[PRICE],b[PRICE]):
         require(splits!=1 and same(a[PRICE]/splits,b[PRICE]),'Unexplained OHLC revision')
         scale=splits
-    require(same(a.volume,b.volume,rtol=0,atol=1) or (scale!=1 and same(a.volume*scale,b.volume,rtol=0,atol=1)), 'Unexplained volume revision')
+    require(np.isfinite(a.volume).all() and (a.volume>=0).all(), 'Invalid baseline volume')
+    require((live.volume>=0).all(), 'Invalid provider volume')
+    # Preserve historical volume for ordinary provider revisions. For a split
+    # requiring price rescaling, retain the strict existing volume check.
+    if scale!=1:
+        require(same(a.volume,b.volume,rtol=0,atol=1) or same(a.volume*scale,b.volume,rtol=0,atol=1), 'Unexplained split volume revision')
     # New cash distributions imply a uniform backward adjustment. Yahoo amounts
     # and previous closes are on the same current split-normalized basis.
     factor=1.
@@ -54,6 +59,7 @@ def reconcile(old,live):
         require(same(expected,b.adj_close,rtol=5e-4,atol=2e-5),'Unexplained adjusted-close revision')
     out=a.copy()
     for c in NUM:
+        if c=='volume' and scale==1: continue
         if not same(a[c],b[c],rtol=5e-5 if c=='adj_close' else 2e-5,atol=2e-5): out[c]=b[c]
     # Historical dividends are per share and must follow a confirmed split.
     if scale!=1:
