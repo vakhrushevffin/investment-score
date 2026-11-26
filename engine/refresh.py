@@ -11,9 +11,10 @@ MULTICLASS={'GOOGL','META','MA','V'}
 # This tag includes assets beyond pure PP&E; label it as broad, not a confirmed CapEx equivalent.
 BROAD_CAPEX={'NVDA','V'}
 
-def refresh(df,email,progress=None):
+def refresh(df,email,progress=None,history=None):
     if '@' not in email or len(email)<6:raise ValueError('Введите контактный email для SEC.')
-    import yfinance as yf
+    if history is None:
+        import yfinance as yf
     out=df.copy().set_index('ticker',drop=False)
     logs=[];today=dt.date.today()
     session=requests.Session()
@@ -22,28 +23,29 @@ def refresh(df,email,progress=None):
     for i,t in enumerate(out.index):
         if progress:progress(i/len(out),f'{t}: котировки и SEC')
         old=out.loc[t].copy(); flags=[]
-        try:
-            closes=yf.Ticker(t).history(period='18mo',auto_adjust=True)['Close'].dropna()
-            if len(closes)<220:raise ValueError('Недостаточно истории цен')
-            price=float(closes.iloc[-1]);qd=closes.index[-1].date()
-            if (today-qd).days>7 or qd>today:raise ValueError('Котировка устарела')
-            out.at[t,'price']=price;out.at[t,'quote_date']=qd.isoformat()
-            out.at[t,'sma50']=float(closes.tail(50).mean());out.at[t,'sma200']=float(closes.tail(200).mean())
-            delta=closes.diff();up=delta.clip(lower=0).ewm(alpha=1/14,adjust=False).mean();down=(-delta.clip(upper=0)).ewm(alpha=1/14,adjust=False).mean()
-            out.at[t,'rsi14']=float(100-100/(1+up.iloc[-1]/down.iloc[-1])) if down.iloc[-1]>0 else 100.
-            out.at[t,'mom12_1']=price/float(closes.iloc[-253])-1 if len(closes)>=253 else np.nan
-            out.at[t,'mom6_1']=price/float(closes.iloc[-127])-1 if len(closes)>=127 else np.nan
-            out.at[t,'technical_pass']=bool(price>out.at[t,'sma200'] and out.at[t,'sma50']>out.at[t,'sma200'])
-            logs.append({'ticker':t,'source':'PRICE','metric':'price','result':'OK','details':qd.isoformat()})
-        except Exception as e:
-            flags.append('PRICE_REFRESH_FAILED')
-            # Do not silently use the previous price in an up-to-date ranking.
-            out.at[t,'quote_date']=''
-            out.at[t,'price']=np.nan
-            for field in ('sma50','sma200','rsi14','mom12_1','mom6_1'):
-                out.at[t,field]=np.nan
-            out.at[t,'technical_pass']=False
-            logs.append({'ticker':t,'source':'PRICE','metric':'price','result':'ERROR','details':str(e)[:180]})
+        if history is None:
+            try:
+                closes=yf.Ticker(t).history(period='18mo',auto_adjust=True)['Close'].dropna()
+                if len(closes)<220:raise ValueError('Недостаточно истории цен')
+                price=float(closes.iloc[-1]);qd=closes.index[-1].date()
+                if (today-qd).days>7 or qd>today:raise ValueError('Котировка устарела')
+                out.at[t,'price']=price;out.at[t,'quote_date']=qd.isoformat()
+                out.at[t,'sma50']=float(closes.tail(50).mean());out.at[t,'sma200']=float(closes.tail(200).mean())
+                delta=closes.diff();up=delta.clip(lower=0).ewm(alpha=1/14,adjust=False).mean();down=(-delta.clip(upper=0)).ewm(alpha=1/14,adjust=False).mean()
+                out.at[t,'rsi14']=float(100-100/(1+up.iloc[-1]/down.iloc[-1])) if down.iloc[-1]>0 else 100.
+                out.at[t,'mom12_1']=price/float(closes.iloc[-253])-1 if len(closes)>=253 else np.nan
+                out.at[t,'mom6_1']=price/float(closes.iloc[-127])-1 if len(closes)>=127 else np.nan
+                out.at[t,'technical_pass']=bool(price>out.at[t,'sma200'] and out.at[t,'sma50']>out.at[t,'sma200'])
+                logs.append({'ticker':t,'source':'PRICE','metric':'price','result':'OK','details':qd.isoformat()})
+            except Exception as e:
+                flags.append('PRICE_REFRESH_FAILED')
+                # Do not silently use the previous price in an up-to-date ranking.
+                out.at[t,'quote_date']=''
+                out.at[t,'price']=np.nan
+                for field in ('sma50','sma200','rsi14','mom12_1','mom6_1'):
+                    out.at[t,field]=np.nan
+                out.at[t,'technical_pass']=False
+                logs.append({'ticker':t,'source':'PRICE','metric':'price','result':'ERROR','details':str(e)[:180]})
         try:
             resp=session.get(f'https://data.sec.gov/api/xbrl/companyfacts/CIK{int(old["cik"]):010d}.json',timeout=35)
             resp.raise_for_status();data=resp.json()
@@ -99,4 +101,7 @@ def refresh(df,email,progress=None):
             logs.append({'ticker':t,'source':'SEC','metric':'all','result':'ERROR','details':str(e)[:180]})
         time.sleep(.15)
     if progress:progress(1.,'Готово')
+    if history is not None:
+        from .price_sync import synchronize
+        return synchronize(out.reset_index(drop=True),history,asof=today),pd.DataFrame(logs)
     return enrich(out.reset_index(drop=True),asof=today),pd.DataFrame(logs)
