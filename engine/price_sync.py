@@ -16,13 +16,14 @@ def synchronize(snapshot, history, asof=None):
     if latest>today or (today-latest).days>7: raise ValueError('Archive date is future or stale')
     out=snapshot.copy().reset_index(drop=True)
     if out.ticker.duplicated().any(): raise ValueError('Duplicate snapshot ticker')
+    out['technical_pass'] = False
     for i,r in out.iterrows():
         x=h.loc[h.ticker.eq(r.ticker)].sort_values('date')
         x=x.loc[x.date<=latest]
         c=pd.to_numeric(x.adj_close,errors='coerce')
         p=pd.to_numeric(x.close,errors='coerce')
         for k in FIELDS: out.at[i,k]=np.nan
-        out.at[i,'quote_date']='';out.at[i,'technical_pass']=False
+        out.at[i,'quote_date']=''
         out.at[i,'price_sync_status']='MISSING_OR_INVALID'
         if x.empty or x.date.iloc[-1]!=latest or not np.isfinite(c).all() or not np.isfinite(p).all() or (c<=0).any() or (p<=0).any(): continue
         out.at[i,'price']=float(p.iloc[-1]);out.at[i,'quote_date']=latest.date().isoformat()

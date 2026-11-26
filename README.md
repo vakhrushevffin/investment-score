@@ -1,13 +1,8 @@
-# Investment Score 2.0 — реестр до 1000 акций
+# Investment Score v2.4.0 — Universe Expansion
 
-Исходный рейтинг сохранён из загруженного пользователем репозитория. Добавлена страница технических светофоров, реестр `data/tickers.csv`, пакетные загрузчики и GitHub Actions. См. `DEPLOY.md`.
+Исследовательское приложение Streamlit с Fundamental Analysis и Technical Risk Monitor. В активном реестре 102 эмитента. SPY хранится в архиве цен как бенчмарк.
 
-Команды:
-
-```bash
-pip install -r requirements.txt
-python -m scripts.update_data --mode all --dry-run
-streamlit run app.py
-```
-
-Обновление цен: `python -m scripts.update_data --mode prices --batch-size 40`. SEC: задайте `SEC_CONTACT_EMAIL` и запустите `--mode fundamentals`.
+- [Установка и обновление](DEPLOY.md)
+- [Протокол тестирования](TEST_REPORT.md)
+- [Ограничения и источники](LIMITATIONS_RU.md)
+- [Реестр эмитентов](data/tickers.csv)

@@ -60,7 +60,7 @@ from datetime import date
 
 archive = Path(__file__).resolve().parents[1] / 'data' / 'daily_prices.csv.gz'
 with st.expander('Источник котировок и обновление', expanded=False):
- st.caption('По умолчанию используется архив до 20.11.2026. Для актуального анализа загрузите собственный обновлённый CSV. Данные страницы не обновляются автоматически.')
+ st.caption('Используется опубликованный архив. Чтобы проверить другой набор котировок, загрузите CSV.')
  upload=st.file_uploader('Обновить исторические цены (CSV)',type=['csv'])
 if upload is not None:
  csv_bytes=upload.getvalue()
@@ -75,6 +75,9 @@ except Exception as e:
  st.error(f'Не удалось обработать данные: {e}');st.stop()
 from scripts.update_data import registry
 active=set(registry().query('enabled and technical_enabled').ticker)
+missing = sorted(active - set(c.columns))
+if missing:
+ st.warning(f'Без истории котировок ({len(missing)}): ' + ', '.join(missing))
 selected=[t for t in c.columns if t in active]
 if not selected: st.error('Нет активных акций с котировками');st.stop()
 c=c[selected];reds=reds[selected];state=state[selected];ma200=ma200[selected]

@@ -7,14 +7,15 @@ import requests
 from . import sec_v2_reference as sec
 from .scoring import enrich, METRICS, BANKS, date
 
-MULTICLASS={'GOOGL','META','MA','V'}
+MULTICLASS={'GOOGL','META','MA','V','BRK-B','DELL','PLTR','CRWD','CVNA','APP','IBKR'}
+SEC_BANK_REVIEW = BANKS | {'BAC','WFC','C','MS'}
 # This tag includes assets beyond pure PP&E; label it as broad, not a confirmed CapEx equivalent.
 BROAD_CAPEX={'NVDA','V'}
 from .fundamental_reconciliation import resolve
 
-def refresh(df,email,progress=None,history=None):
+def refresh(df,email,progress=None,history=None, *, refresh_prices=True):
     if '@' not in email or len(email)<6:raise ValueError('Введите контактный email для SEC.')
-    if history is None:
+    if history is None and refresh_prices:
         import yfinance as yf
     out=df.copy().set_index('ticker',drop=False)
     logs=[];today=dt.date.today()
@@ -24,7 +25,7 @@ def refresh(df,email,progress=None,history=None):
     for i,t in enumerate(out.index):
         if progress:progress(i/len(out),f'{t}: котировки и SEC')
         old=out.loc[t].copy(); flags=[]
-        if history is None:
+        if history is None and refresh_prices:
             try:
                 closes=yf.Ticker(t).history(period='18mo',auto_adjust=True)['Close'].dropna()
                 if len(closes)<220:raise ValueError('Недостаточно истории цен')
@@ -68,7 +69,7 @@ def refresh(df,email,progress=None,history=None):
                     value=resolved[metric][0] or value
                 end=date(value['end']) if value else None
                 aligned=bool(target and end==target)
-                if t in BANKS:aligned=False
+                if t in SEC_BANK_REVIEW:aligned=False
                 # Clear stale data instead of silently preserving previous observations.
                 out.at[t,metric+'_ttm']=value['value'] if value and aligned else np.nan
                 out.at[t,metric+'_end']=value['end'] if value and aligned else ''
@@ -87,7 +88,7 @@ def refresh(df,email,progress=None,history=None):
                 if all(65<=g<=115 for g in gaps) and denom>0:yoy=sum(x['value'] for x in a[4:])/denom-1
             if pd.isna(yoy) and resolved['revenue'][0] is not None and ttms['revenue'] and np.isclose(resolved['revenue'][0]['value'],ttms['revenue']['value'],rtol=1e-10):
                 yoy=resolved['revenue'][1] if resolved['revenue'][1] is not None else np.nan
-            out.at[t,'revenue_yoy']=yoy if t not in BANKS else np.nan
+            out.at[t,'revenue_yoy']=yoy if t not in SEC_BANK_REVIEW else np.nan
             if t in MULTICLASS:
                 # Existing audited/indicative all-class equivalent remains, but is not auto-verified.
                 flags.append('MULTICLASS_CAPITALIZATION_REVIEW')
@@ -99,7 +100,7 @@ def refresh(df,email,progress=None,history=None):
                     out.at[t,'shares_asof']=''
                     flags.append('SHARES_MISSING_OR_STALE')
             if t in BROAD_CAPEX:flags.append('CAPEX_BROAD_SCOPE_REVIEW')
-            if t in BANKS:flags.append('BANK_SEPARATE_MODEL_REQUIRED')
+            if t in SEC_BANK_REVIEW:flags.append('BANK_SEPARATE_MODEL_REQUIRED')
             out.at[t,'status']='REVIEW_REQUIRED' if flags else 'AUTOMATED_CHECK_ONLY'
             out.at[t,'flags']=';'.join(sorted(set(flags)))
         except Exception as e:

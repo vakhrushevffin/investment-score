@@ -16,20 +16,7 @@ DETAIL_COLS = ['ticker', 'status', 'rows', 'first_date', 'latest_date',
 DATE_COLS = ['ticker', 'source', 'date', 'classification']
 
 
-def validate_registry(path):
-    reg = pd.read_csv(path, dtype={'ticker': 'string'})
-    required = {'ticker', 'enabled', 'technical_enabled'}
-    if not required.issubset(reg.columns):
-        raise ValueError(f'Registry missing columns: {sorted(required - set(reg.columns))}')
-    reg['ticker'] = reg['ticker'].str.strip().str.upper()
-    if reg.ticker.isna().any() or reg.ticker.eq('').any() or reg.ticker.duplicated().any():
-        raise ValueError('Invalid or duplicate ticker in registry')
-    for col in ('enabled', 'technical_enabled'):
-        reg[col] = reg[col].astype(str).str.lower().isin(['true', '1', 'yes'])
-    stocks = reg.loc[reg.enabled & reg.technical_enabled, 'ticker'].tolist()
-    if len(stocks) != 28 or 'SPY' in stocks:
-        raise ValueError(f'Expected exactly 28 active technical stocks excluding SPY, found {len(stocks)}')
-    return sorted(stocks + ['SPY'])
+from safe_price_update import registry_symbols as validate_registry
 
 
 def normalize_history(hist, ticker):

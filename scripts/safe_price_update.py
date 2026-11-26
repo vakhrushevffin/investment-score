@@ -3,6 +3,7 @@ import argparse
 import datetime as dt
 import json
 import sys
+import time
 from pathlib import Path
 
 import pandas as pd
@@ -26,9 +27,19 @@ def registry_symbols(path):
     for c in ('enabled', 'technical_enabled'):
         r[c] = r[c].astype(str).str.strip().str.lower().isin(('true', '1', 'yes'))
     stocks = r.loc[r.enabled & r.technical_enabled, 'ticker'].tolist()
-    if len(stocks) != 28 or 'SPY' in stocks:
-        raise ValueError(f'Expected 28 stocks excluding SPY; found {len(stocks)}')
+    if not 1 <= len(stocks) <= 1000 or 'SPY' in stocks:
+        raise ValueError('Expected 1–1000 active stocks excluding SPY')
     return sorted(stocks + ['SPY'])
+
+
+def archive_coverage(requested, old):
+    available = set(old.ticker)
+    if 'SPY' not in available:
+        raise ValueError('Missing SPY in baseline')
+    covered = [ticker for ticker in requested if ticker in available]
+    if len(covered) < 2:
+        raise ValueError('No active stocks in baseline')
+    return covered, sorted(set(requested) - available)
 
 
 def dates(s):
@@ -73,7 +84,18 @@ def load_archive(path):
 
 def fetch_one(ticker, start):
     import yfinance as yf
-    raw = yf.Ticker(ticker).history(start=start, auto_adjust=False, actions=True)
+    from yfinance.exceptions import YFRateLimitError
+
+    for delay in (0, 60):
+        time.sleep(delay or 2)
+        try:
+            raw = yf.Ticker(ticker).history(
+                start=start, auto_adjust=False, actions=True, raise_errors=True, timeout=15,
+            )
+            break
+        except YFRateLimitError:
+            if delay:
+                raise
     if raw is None or raw.empty:
         raise ValueError('Empty Yahoo response')
     x = raw.reset_index()
@@ -98,11 +120,9 @@ def run(registry, archive, output, lookback_days, max_stale_days, fetch=fetch_on
     summary = {'result': 'FAIL', 'mode': 'DRY_RUN', 'baseline_unchanged': True}
     checks, errors, volume_notes = [], [], []
     try:
-        symbols = registry_symbols(registry)
         old = load_archive(archive)
-        missing = set(symbols) - set(old.ticker)
-        if missing:
-            raise ValueError(f'Missing baseline symbols: {sorted(missing)}')
+        symbols, pending = archive_coverage(registry_symbols(registry), old)
+        summary['pending_bootstrap'] = pending
         today = dt.datetime.now(dt.timezone.utc).date()
         # Download overlapping recent history, including holidays/weekends.
         start = min(today - dt.timedelta(days=lookback_days), old.date.max().date() - dt.timedelta(days=14)).isoformat()

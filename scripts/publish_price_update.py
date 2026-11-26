@@ -10,7 +10,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import exchange_calendars as xc
-from safe_price_update import registry_symbols, load_archive, fetch_one, check_prices, NUM, ACTION_FIELDS
+from safe_price_update import registry_symbols, archive_coverage, load_archive, fetch_one, check_prices, NUM, ACTION_FIELDS
 
 
 def digest(path):
@@ -38,11 +38,12 @@ def validate(archive, registry, report, expected_hash, now=None, fetch=fetch_one
     require(digest(archive) == expected_hash, 'Baseline hash changed')
     (report / 'publish_daily_prices.csv.gz').unlink(missing_ok=True)
     summary = json.loads((report / 'summary.json').read_text())
-    symbols = registry_symbols(registry)
-    require(summary['result'] == 'PASS' and summary['checked'] == summary['passed'] == len(symbols), 'Loader did not pass')
-    require(pd.read_csv(report / 'errors.csv').empty, 'Loader reported errors')
     candidate = report / 'candidate_daily_prices.csv.gz'
     old, new = load_archive(archive), load_archive(candidate)
+    symbols, pending = archive_coverage(registry_symbols(registry), old)
+    require(summary.get('pending_bootstrap', []) == pending, 'Registry coverage changed')
+    require(summary['result'] == 'PASS' and summary['checked'] == summary['passed'] == len(symbols), 'Loader did not pass')
+    require(pd.read_csv(report / 'errors.csv').empty, 'Loader reported errors')
     require(list(old.columns) == list(new.columns), 'Schema changed')
     require(np.isfinite(old[NUM]).all().all() and np.isfinite(new[NUM]).all().all(), 'Nonfinite prices')
     keys = ['ticker', 'date']

@@ -1,11 +1,9 @@
 import datetime as dt
 import io
 import pandas as pd
-import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
-from engine.scoring import enrich
 from engine.refresh import refresh
 
 from pathlib import Path
@@ -19,11 +17,13 @@ try:
 except Exception as exc:
     st.error(f'Архив котировок недоступен: {exc}');st.stop()
 @st.cache_data
-def initial(blob):
-    from scripts.update_data import registry
-    active=set(registry().query('enabled and fundamental_enabled').ticker)
-    return pd.read_csv(io.BytesIO(blob)).query('ticker in @active').copy()
-if 'snapshot' not in st.session_state:st.session_state.snapshot=initial((ROOT/'data/baseline.csv').read_bytes())
+def initial(blob, registry_blob):
+    from scripts.update_data import registry, snapshot_from_registry
+    return snapshot_from_registry(registry(io.BytesIO(registry_blob)), pd.read_csv(io.BytesIO(blob)))
+if 'snapshot' not in st.session_state:
+    st.session_state.snapshot = initial(
+        (ROOT/'data/baseline.csv').read_bytes(), (ROOT/'data/tickers.csv').read_bytes()
+    )
 if 'logs' not in st.session_state:st.session_state.logs=pd.DataFrame()
 if 'approvals' not in st.session_state:st.session_state.approvals={}
 if 'refresh_at' not in st.session_state:st.session_state.refresh_at='Не выполнялось'
@@ -62,10 +62,16 @@ if not df.price_sync_status.eq('OK').all():
     st.warning('Некоторые строки требуют проверки: '+', '.join(df.loc[~df.price_sync_status.eq('OK'),'ticker']))
 for col in ('score','partial_score','ranking_score','price','completeness','rsi14','sma50','sma200'):
     df[col]=pd.to_numeric(df[col],errors='coerce')
-full=int(df.score.notna().sum());partial=int(df.score.isna().sum())
+full=int(df.score.notna().sum());partial=int((df.score.isna() & df.partial_score.notna()).sum())
 a,b,c,d=st.columns(4)
-a.metric('Компаний',len(df));b.metric('Полный Score',full);c.metric('Неполный Score',partial);d.metric('Котировки на',str(df.quote_date.replace('',np.nan).max()) if df.quote_date.replace('',np.nan).notna().any() else '—')
-st.info('Полный Score означает наличие четырёх вычислимых факторов, а НЕ ручную верификацию отчётности. Компании с неполными данными и банки остаются в рейтинге. Все 28 акций включены в единый рейтинг. Неполный Score — средневзвешенное только доступных факторов, НЕ подтверждённый полный Score. Ранги разных степеней полноты несопоставимы по надёжности.')
+a.metric('Компаний', len(df))
+b.metric('Полный Score', full)
+c.metric('Неполный Score', partial)
+latest_quote = pd.to_datetime(df.quote_date, errors='coerce').max()
+d.metric('Котировки на', latest_quote.date().isoformat() if pd.notna(latest_quote) else '—')
+if df.ranking_score.isna().any():
+    st.caption(f'Без рейтингового балла: {df.ranking_score.isna().sum()}')
+st.info('Полный Score означает наличие четырёх вычислимых факторов, а НЕ ручную верификацию отчётности. Компании с неполными данными и банки остаются в рейтинге. Неполный Score — средневзвешенное только доступных факторов, НЕ подтверждённый полный Score. Ранги разных степеней полноты несопоставимы по надёжности.')
 
 page=st.tabs(['🏆 Рейтинг','📈 Компания','🧮 Размер позиции','🗂️ История и данные'])
 with page[0]:
@@ -74,7 +80,7 @@ with page[0]:
     with right:query=st.text_input('Поиск тикера','')
     shown=df.copy()
     if show=='Полный Score':shown=shown[shown.score.notna()]
-    if show=='Неполный Score':shown=shown[shown.score.isna()]
+    if show=='Неполный Score':shown=shown[shown.score.isna() & shown.partial_score.notna()]
     if query:shown=shown[shown.ticker.str.contains(query.upper(),regex=False)]
     table=shown[['rank','ticker','ranking_score','score','partial_score','completeness','quality','growth','valuation','momentum','price','quote_date','status','validation_flags','ttm_target_end','flags']].copy()
     st.dataframe(table,hide_index=True,use_container_width=True,column_config={'ranking_score':st.column_config.NumberColumn('Рейтинговый балл',format='%.2f'),'score':st.column_config.NumberColumn('Полный Score',format='%.2f'),'partial_score':st.column_config.NumberColumn('Частичный Score',format='%.2f'),'completeness':st.column_config.ProgressColumn('Полнота, %',min_value=0,max_value=1)})
@@ -139,7 +145,7 @@ with page[2]:
             st.success('Решение сохранено в текущей сессии. Сделка не отправлена брокеру.')
 with page[3]:
     st.subheader('Экспорт и журнал')
-    st.download_button('Скачать текущий рейтинг CSV',df.to_csv(index=False).encode('utf-8-sig'),'investment_score_28.csv','text/csv')
+    st.download_button('Скачать текущий рейтинг CSV',df.to_csv(index=False).encode('utf-8-sig'),'investment_score.csv','text/csv')
     if st.session_state.approvals:
         approvals=pd.DataFrame(st.session_state.approvals.values())
         st.dataframe(approvals,use_container_width=True)
