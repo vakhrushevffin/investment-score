@@ -52,7 +52,7 @@ def calculate(csv_bytes):
     return raw,c,reds,state,votes,ma200
 
 # Streamlit multipage: main app controls page configuration
-st.title('🚦 Технические светофоры')
+st.title('Technical Risk Monitor')
 st.caption('Исследовательский монитор рисков • исторические сигналы • без исполнения сделок')
 from pathlib import Path
 import gzip
