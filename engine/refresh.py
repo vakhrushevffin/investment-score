@@ -10,6 +10,7 @@ from .scoring import enrich, METRICS, BANKS, date
 MULTICLASS={'GOOGL','META','MA','V'}
 # This tag includes assets beyond pure PP&E; label it as broad, not a confirmed CapEx equivalent.
 BROAD_CAPEX={'NVDA','V'}
+from .fundamental_reconciliation import resolve
 
 def refresh(df,email,progress=None,history=None):
     if '@' not in email or len(email)<6:raise ValueError('Введите контактный email для SEC.')
@@ -60,8 +61,12 @@ def refresh(df,email,progress=None,history=None):
             current_ends=[date(v['end']) for k,v in ttms.items() if v and k in ('revenue','net_income','cfo')]
             current_ends=[x for x in current_ends if x and x<=today and (today-x).days<=200]
             target=max(current_ends) if current_ends else None
+            resolved={m:resolve(data,m,t,target,today) for m in METRICS}
             for metric in METRICS:
-                value=ttms[metric];end=date(value['end']) if value else None
+                value=ttms[metric]
+                if not value or date(value['end'])!=target:
+                    value=resolved[metric][0] or value
+                end=date(value['end']) if value else None
                 aligned=bool(target and end==target)
                 if t in BANKS:aligned=False
                 # Clear stale data instead of silently preserving previous observations.
@@ -72,12 +77,16 @@ def refresh(df,email,progress=None,history=None):
                 tag=','.join(sorted({s['tag'] for s in value['sources']})) if value else ''
                 logs.append({'ticker':t,'source':'SEC','metric':metric,'result':result,'details':f'target={target}; observed={end}; tag={tag}'})
                 if not aligned:flags.append(metric.upper()+'_'+result)
+                out.at[t,metric+'_tag']=tag if aligned else ''
+                if metric=='capex' and 'PaymentsToAcquireProductiveAssets' in tag:flags.append('CAPEX_BROAD_SCOPE_REVIEW')
             rev=quarters['revenue'];a=rev[-8:]
             yoy=np.nan
             if target and len(a)==8 and date(a[-1]['end'])==target:
                 gaps=[(date(b['end'])-date(x['end'])).days for x,b in zip(a,a[1:])]
                 denom=sum(x['value'] for x in a[:4])
                 if all(65<=g<=115 for g in gaps) and denom>0:yoy=sum(x['value'] for x in a[4:])/denom-1
+            if pd.isna(yoy) and resolved['revenue'][0] is not None and ttms['revenue'] and np.isclose(resolved['revenue'][0]['value'],ttms['revenue']['value'],rtol=1e-10):
+                yoy=resolved['revenue'][1] if resolved['revenue'][1] is not None else np.nan
             out.at[t,'revenue_yoy']=yoy if t not in BANKS else np.nan
             if t in MULTICLASS:
                 # Existing audited/indicative all-class equivalent remains, but is not auto-verified.
