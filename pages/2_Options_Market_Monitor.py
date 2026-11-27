@@ -6,10 +6,11 @@ ROOT=Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path: sys.path.insert(0,str(ROOT))
 from engine.options_market import demo, load_history, common_snapshot, SYMBOLS
 from engine.options_research_demo import instrument_demo, PROFILES
+from engine.options_quality_demo import checks, archive_checks
 
 st.set_page_config(page_title='Options Market Monitor',layout='wide')
 st.title('Options Market Monitor')
-st.caption('v2.5.2 | Research interface prototype | Educational statistics')
+st.caption('v2.5.3 | Data quality integration | Educational statistics')
 market,instrument,quality,method=st.tabs(['Market Overview','Instrument Research','Data Quality','Methodology'])
 with market:
     mode=st.radio('Data mode',['DEMO','HISTORICAL'],horizontal=True)
@@ -61,8 +62,14 @@ with instrument:
     st.subheader('Gamma Research'); st.info('Real chain data: UNAVAILABLE. Model assumptions do not identify observed participant positions. No exposure estimates or predictions are provided.')
 with quality:
     st.subheader('Data Quality Monitor')
-    st.table(pd.DataFrame([('Synthetic instrument examples','VALID (fixture only)'),('Real option chains','UNAVAILABLE'),('Usage rights','UNVERIFIED'),('Daily collection','UNVERIFIED'),('Production archive','UNVERIFIED')],columns=['Scope','Status']))
-    st.caption('OMR-004 / OMR-006.1 principles; production validators and versioning are not integrated in this prototype.')
+    st.warning('SYNTHETIC — controlled quality checks; not validation of real market data')
+    results=pd.DataFrame(checks()+archive_checks())
+    st.metric('Controlled checks passed',f"{int(results.Passed.sum())}/{len(results)}")
+    st.dataframe(results,hide_index=True)
+    st.download_button('Download quality check log',results.to_csv(index=False),file_name='synthetic_quality_checks.csv')
+    st.caption('Expected rejection counts as a passed test. Rounding compatibility is separate from materiality.')
+    st.table(pd.DataFrame([('Real option chains','UNAVAILABLE'),('Usage rights','UNVERIFIED'),('Daily collection','UNVERIFIED'),('Production archive','UNVERIFIED')],columns=['Scope','Status']))
+    st.caption('OMR-006.1 validators; in-memory archive only. No persistent or live data writes.')
 with method:
     st.subheader('Research Methodology')
     for name,desc in [('Open Interest','Number of outstanding contracts.'),('Put/Call OI','Put open interest divided by call open interest.'),('Implied Volatility','Volatility inferred from an option pricing model.'),('Historical Volatility','Dispersion of historical returns; demo values are illustrative inputs.'),('Gamma','Second derivative of option value with respect to underlying price.'),('Model uncertainty','Open interest does not identify signed participant positions. Predictive properties have not been established.')]:
