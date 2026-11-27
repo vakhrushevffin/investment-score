@@ -84,16 +84,21 @@ c=c[selected];reds=reds[selected];state=state[selected];ma200=ma200[selected]
 last=c.index.max(); st.caption(f'Источник: {source} · Последняя дата: {last:%d.%m.%Y} · {len(c.columns)} акций · исторические данные, не онлайн-сигналы')
 if (pd.Timestamp.today().normalize()-last).days>7: st.warning('Котировки старше 7 календарных дней. Сигналы нельзя использовать как актуальные.')
 latest=state.loc[last];lastred=reds.loc[last]
-watch=st.multiselect('Акции для наблюдения',list(c.columns),default=list(c.columns))
-if not watch:st.stop()
+watch=list(c.columns)
 summary=pd.DataFrame({'Тикер':watch,'Режим':[latest[t] for t in watch],'Красных из 7':[int(lastred[t]) if pd.notna(lastred[t]) else None for t in watch], 'Закрытие':[float(c.loc[last,t]) if pd.notna(c.loc[last,t]) else None for t in watch], 'Дата цены':[raw.loc[raw.ticker.eq(t),'date'].max().date().isoformat() if raw.ticker.eq(t).any() else None for t in watch]})
 col1,col2,col3=st.columns(3)
 col1.metric('Красных акций',int((summary['Режим']=='КРАСНЫЙ').sum()))
 col2.metric('Жёлтых акций',int((summary['Режим']=='ЖЁЛТЫЙ').sum()))
 col3.metric('Зелёных акций',int((summary['Режим']=='ЗЕЛЁНЫЙ').sum()))
 st.subheader('Сводка наблюдения')
-st.dataframe(summary,hide_index=True,use_container_width=True)
-st.download_button('Экспорт сводки CSV',summary.to_csv(index=False).encode('utf-8-sig'),file_name='technical_risk_summary.csv',mime='text/csv')
+status_filter=st.radio('Фильтр по статусу', ['Все', '🔴 Красные', '🟡 Жёлтые', '🟢 Зелёные'], horizontal=True, key='technical_status_filter')
+status_map={'🔴 Красные':'КРАСНЫЙ','🟡 Жёлтые':'ЖЁЛТЫЙ','🟢 Зелёные':'ЗЕЛЁНЫЙ'}
+filtered_summary=summary if status_filter=='Все' else summary.loc[summary['Режим'].eq(status_map[status_filter])]
+st.caption(f'Показано: {len(filtered_summary)} из {len(summary)}')
+if filtered_summary.empty:
+ st.info('Нет акций с выбранным статусом.')
+st.dataframe(filtered_summary,hide_index=True,use_container_width=True)
+st.download_button('Экспорт сводки CSV',filtered_summary.to_csv(index=False).encode('utf-8-sig'),file_name='technical_risk_summary.csv',mime='text/csv')
 st.subheader('Карточка акции')
 ticker=st.selectbox('Тикер',watch)
 day=st.date_input('Дата анализа',value=last.date(),min_value=c.index.min().date(),max_value=last.date())
