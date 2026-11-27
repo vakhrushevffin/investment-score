@@ -19,7 +19,7 @@ def aware(value):
 
 
 def classify(rows, expected, day, cutoff, units='decimal', method='v1', prior=None,
-             *, quote_not_before=None, require_contract_fields=False):
+             *, quote_not_before=None, require_contract_fields=False, allow_missing_core=False):
     if type(day) is not date or not aware(cutoff):
         return 'INVALID', 'invalid_reference_dates'
     if quote_not_before is None:
@@ -38,12 +38,14 @@ def classify(rows, expected, day, cutoff, units='decimal', method='v1', prior=No
         (x.get('multiplier') is not None and (
             type(x['multiplier']) not in (int, D) or
             not D(x['multiplier']).is_finite() or x['multiplier'] <= 0)) or
-        type(x.get('oi')) is not int or x['oi']<0 or
+        ((not allow_missing_core or x.get('oi') is not None) and
+         (type(x.get('oi')) is not int or x['oi'] < 0)) or
         (x.get('iv') is not None and (not isinstance(x['iv'],D) or not x['iv'].is_finite() or x['iv']<0))
         or not isinstance(x.get('key'),str) or not x['key']
-        or type(x.get('date')) is not date
-        or not aware(x.get('timestamp'))
-        or x['date']>day or x['timestamp'].astimezone(timezone.utc)>cutoff_utc
+        or ((not allow_missing_core or x.get('date') is not None) and
+            (type(x.get('date')) is not date or x['date'] > day))
+        or ((not allow_missing_core or x.get('timestamp') is not None) and
+            (not aware(x.get('timestamp')) or x['timestamp'].astimezone(timezone.utc) > cutoff_utc))
         or x.get('deliverable')=='invalid'
         for x in rows):
         return 'INVALID', 'schema_units_or_future'
@@ -52,19 +54,24 @@ def classify(rows, expected, day, cutoff, units='decimal', method='v1', prior=No
         return 'INCONSISTENT', 'duplicate_key'
     if expected is not None and set(keys)-expected:
         return 'INCONSISTENT', 'out_of_scope_key'
-    dates={x['date'] for x in rows}
+    dates={x['date'] for x in rows if x.get('date') is not None}
     if len(dates)>1:
         return 'INCONSISTENT','mixed_effective_dates'
     if prior is not None and {x['key']:x for x in rows}!={x['key']:x for x in prior}:
         return 'INCONSISTENT','same_version_changed'
-    stale_oi = next(iter(dates)) < day
-    stale_quote = any(x['timestamp'].astimezone(timezone.utc) < quote_start_utc for x in rows)
+    stale_oi = bool(dates) and next(iter(dates)) < day
+    stale_quote = any(x.get('timestamp') is not None and x['timestamp'].astimezone(timezone.utc) < quote_start_utc
+                      for x in rows)
     if stale_oi and stale_quote:
         return 'STALE', 'prior_effective_date_and_stale_quote'
     if stale_oi:
         return 'STALE', 'prior_effective_date'
     if stale_quote:
         return 'STALE', 'stale_quote'
+    if allow_missing_core and any(
+        x.get(field) is None for x in rows for field in ('date', 'timestamp', 'oi')
+    ):
+        return 'PARTIAL', 'missing_quote_time_oi_date_or_open_interest'
     if any(x.get(field) is None and (require_contract_fields or field in x)
            for x in rows for field in ('volume', 'multiplier')):
         return 'PARTIAL', 'missing_contract_fields'

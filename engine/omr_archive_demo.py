@@ -91,6 +91,17 @@ def pack(row):
     return payload,hashlib.sha256(core.encode()).hexdigest()
 
 
+def revision_decision(previous, incoming, same_content):
+    """Order revisions by a trusted source version, never by receipt time."""
+    if previous is None or incoming is None:
+        return 'UNCHANGED' if same_content else 'UNVERIFIED'
+    if incoming < previous:
+        return 'STALE'
+    if incoming == previous:
+        return 'UNCHANGED' if same_content else 'INCONSISTENT'
+    return 'ACCEPT'
+
+
 def ingest(db,rows,cal,known):
     if not rows:
         return 0,0,'UNAVAILABLE'
@@ -115,16 +126,11 @@ def ingest(db,rows,cal,known):
             _, old_sha = pack(old_row)
             previous_version = old_row.get('source_version')
             version = row.get('source_version')
-            if previous_version is None or version is None:
-                if sha != old_sha:
-                    return 0, 0, 'UNVERIFIED'
+            decision = revision_decision(previous_version, version, sha == old_sha)
+            if decision == 'UNCHANGED':
                 continue
-            if version < previous_version:
-                return 0, 0, 'STALE'
-            if version == previous_version:
-                if sha != old_sha:
-                    return 0, 0, 'INCONSISTENT'
-                continue
+            if decision != 'ACCEPT':
+                return 0, 0, decision
         pending.append((row['session'], row['key'], payload, sha, old is None))
 
     if not pending:
